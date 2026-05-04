@@ -20,7 +20,6 @@ def check_password():
 
 if not check_password():
     st.stop()
-
 import io
 import os
 import re
@@ -37,7 +36,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v1.3 — Internal Software Build"
+APP_VERSION = "v1.4 — Internal Build"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -76,48 +75,67 @@ st.set_page_config(page_title=APP_TITLE, page_icon="🔒", layout="wide")
 YA_CSS = """
 <style>
 :root{
-  --ya-bg:#0b1320;
-  --ya-bg2:#15213a;
+  --ya-bg:#357b84;
+  --ya-bg-deep:#235f67;
   --ya-card:#ffffff;
   --ya-ink:#101828;
-  --ya-muted:#5b6b7f;
+  --ya-muted:#d9eef1;
   --ya-teal:#357b84;
   --ya-teal-dark:#00504f;
+  --ya-teal-button:#6fc7cf;
+  --ya-teal-button-hover:#83d8df;
   --ya-teal-soft:#eaf6f8;
   --ya-blue:#08245c;
-  --ya-border:#d7dde5;
+  --ya-border:#b8dce1;
   --ya-yellow:#fff200;
 }
 html, body, [data-testid="stAppViewContainer"]{
-  background:linear-gradient(180deg,var(--ya-bg),#111a2d 36%,var(--ya-bg2) 100%) !important;
-  color:var(--ya-ink);
+  background:var(--ya-bg) !important;
+  color:#ffffff !important;
 }
 [data-testid="stHeader"]{background:rgba(0,0,0,0);}
 .block-container{padding-top:1.35rem; padding-bottom:3rem; max-width:1400px;}
-.ya-shell{background:var(--ya-card); border-radius:22px; padding:24px 28px; box-shadow:0 18px 48px rgba(0,0,0,.22); margin-bottom:18px; border:1px solid rgba(255,255,255,.4)}
+.ya-shell{background:rgba(0,80,79,.42); border-radius:22px; padding:24px 28px; box-shadow:0 18px 48px rgba(0,0,0,.22); margin-bottom:18px; border:1px solid rgba(255,255,255,.25)}
 .ya-header{display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:12px;}
 .ya-brand{display:flex; align-items:center; gap:20px;}
-.ya-logo{width:190px; max-width:34vw;}
-.ya-title h1{font-size:30px; line-height:1.1; color:var(--ya-teal); margin:0; font-weight:800; letter-spacing:-.02em;}
-.ya-title p{margin:4px 0 0 0; color:#276f78; font-size:16px;}
-.ya-version{background:#eaf6f8; border:1px solid #b8dce1; color:#00504f; border-radius:999px; padding:8px 12px; font-weight:800; font-size:12px; white-space:nowrap;}
-.ya-divider{height:4px; border-radius:99px; background:linear-gradient(90deg,var(--ya-teal),var(--ya-teal),#edf0f2); margin:12px 0 4px;}
-.ya-note{background:#eaf6f8; border-left:5px solid var(--ya-teal); padding:12px 14px; border-radius:12px; color:#164f57; margin:12px 0 4px;}
-h1,h2,h3{color:var(--ya-teal)!important; font-weight:800!important;}
-[data-testid="stSidebar"]{background:#ffffff!important; border-right:1px solid var(--ya-border);}
-[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3{color:var(--ya-teal-dark)!important;}
-.stButton>button, .stDownloadButton>button{background:linear-gradient(90deg,var(--ya-teal),#00a69a); color:white; border:0; border-radius:14px; padding:.72rem 1rem; font-weight:800; box-shadow:0 5px 14px rgba(53,123,132,.22);}
-.stButton>button:hover, .stDownloadButton>button:hover{border:0; color:white; filter:brightness(1.04);}
-[data-testid="stMetric"]{background:#eaf6f8; border:1px solid #b8dce1; padding:16px 16px; border-radius:18px; box-shadow:0 8px 24px rgba(12,22,39,.06);}
-[data-testid="stMetricLabel"]{color:#345563!important; font-weight:700;}
+.ya-logo{width:190px; max-width:34vw; background:#fff; padding:10px; border-radius:16px; box-shadow:0 8px 24px rgba(0,0,0,.14)}
+.ya-title h1{font-size:30px; line-height:1.1; color:#ffffff!important; margin:0; font-weight:900; letter-spacing:-.02em;}
+.ya-title p{margin:4px 0 0 0; color:#eaf6f8; font-size:16px;}
+.ya-version{background:#eaf6f8; border:1px solid #b8dce1; color:#00504f; border-radius:999px; padding:8px 12px; font-weight:900; font-size:12px; white-space:nowrap;}
+.ya-divider{height:4px; border-radius:99px; background:linear-gradient(90deg,#ffffff,#b8dce1,rgba(255,255,255,.15)); margin:12px 0 4px;}
+.ya-note{background:rgba(234,246,248,.14); border-left:5px solid #ffffff; padding:12px 14px; border-radius:12px; color:#ffffff; margin:12px 0 4px;}
+.ya-disclaimer{margin-top:10px; font-size:12px; line-height:1.4; color:#ffffff; opacity:.92;}
+h1,h2,h3, h4, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3{color:#ffffff!important; font-weight:900!important;}
+p, li, .stMarkdown, .stCaption, [data-testid="stCaptionContainer"]{color:#ffffff!important;}
+label, [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p{color:#ffffff!important; font-weight:800!important;}
+[data-testid="stSidebar"]{background:var(--ya-bg-deep)!important; border-right:1px solid rgba(255,255,255,.22);}
+[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3,[data-testid="stSidebar"] p,[data-testid="stSidebar"] label,[data-testid="stSidebar"] span{color:#ffffff!important;}
+[data-testid="stSidebar"] .stImage img{background:#ffffff; border-radius:14px; padding:8px;}
+[data-testid="stSidebar"] [data-testid="stExpander"]{background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.22); border-radius:16px;}
+.stButton>button, .stDownloadButton>button{
+  background:linear-gradient(180deg,var(--ya-teal-button),#4bb6bf);
+  color:#00393c;
+  border:0;
+  border-radius:14px;
+  padding:.76rem 1.05rem;
+  font-weight:900;
+  box-shadow:0 8px 0 #1d6d75, 0 14px 24px rgba(0,0,0,.25);
+  transition:transform .08s ease, box-shadow .08s ease, filter .12s ease;
+}
+.stButton>button:hover, .stDownloadButton>button:hover{border:0; color:#002f32; filter:brightness(1.04); transform:translateY(-1px); box-shadow:0 9px 0 #1d6d75, 0 16px 28px rgba(0,0,0,.28);}
+.stButton>button:active, .stDownloadButton>button:active{transform:translateY(6px); box-shadow:0 2px 0 #1d6d75, 0 8px 14px rgba(0,0,0,.24);}
+[data-testid="stMetric"]{background:#eaf6f8; border:1px solid #b8dce1; padding:16px 16px; border-radius:18px; box-shadow:0 8px 24px rgba(12,22,39,.12);}
+[data-testid="stMetricLabel"]{color:#345563!important; font-weight:800;}
 [data-testid="stMetricValue"]{color:#08245c!important; font-weight:900;}
 .stTabs [data-baseweb="tab-list"]{gap:8px;}
-.stTabs [data-baseweb="tab"]{border-radius:999px; padding:8px 16px; background:#f1f5f7; color:#27434a; font-weight:800;}
-.stTabs [aria-selected="true"]{background:#357b84!important; color:white!important;}
-.ya-section-card{background:#ffffff; border:1px solid #d7dde5; border-radius:18px; padding:18px; margin:10px 0; box-shadow:0 8px 28px rgba(12,22,39,.08);}
-.ya-mini{font-size:12px; color:#5b6b7f;}
-.ya-pill{display:inline-block; background:#eaf6f8; color:#00504f; border:1px solid #b8dce1; border-radius:999px; padding:6px 10px; font-weight:800; font-size:12px; margin-right:6px;}
+.stTabs [data-baseweb="tab"]{border-radius:999px; padding:8px 16px; background:#eaf6f8; color:#00504f; font-weight:900;}
+.stTabs [aria-selected="true"]{background:#ffffff!important; color:#00504f!important;}
+.ya-section-card{background:rgba(0,80,79,.28); border:1px solid rgba(255,255,255,.24); border-radius:18px; padding:18px; margin:10px 0; box-shadow:0 8px 28px rgba(12,22,39,.12); color:#ffffff;}
+.ya-mini{font-size:12px; color:#eaf6f8;}
+.ya-pill{display:inline-block; background:#eaf6f8; color:#00504f; border:1px solid #b8dce1; border-radius:999px; padding:6px 10px; font-weight:900; font-size:12px; margin-right:6px;}
 .ya-warning{background:#fff8cc; border:1px solid #fff200; color:#4c4300; border-radius:14px; padding:12px 14px;}
+[data-testid="stDataFrame"]{background:#ffffff; border-radius:14px; overflow:hidden;}
+input, textarea, select{border-radius:12px!important;}
 </style>
 """
 st.markdown(YA_CSS, unsafe_allow_html=True)
@@ -465,12 +483,14 @@ def render_header():
           <div class='ya-title'>
             <h1>{APP_TITLE}</h1>
             <p>Register of Published Enforcement Actions Benchmarking</p>
+            <p><strong>Developed by James Maclean-Horton</strong></p>
           </div>
         </div>
         <div class='ya-version'>{APP_VERSION}</div>
       </div>
       <div class='ya-divider'></div>
       <div class='ya-note'>Internal reporting tool for quarterly NSW enforcement action PDFs, provider benchmarking, Law 165/166/167 split, cancellations, suspensions, and rolling history.</div>
+      <div class='ya-disclaimer'>This system and its outputs are the property of Young Academics Early Learning Centre. Any unauthorised access, use, copying, distribution, or disclosure is strictly prohibited.</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -483,12 +503,13 @@ def main():
     with st.sidebar:
         st.image(LOGO_URL, width=190)
         st.header("Controls")
-        st.caption("Provider mapping is the control point for grouping services into brands/providers.")
-        uploaded_map = st.file_uploader("Upload provider_mapping.csv", type=["csv"], key="map")
-        map_df = pd.read_csv(uploaded_map) if uploaded_map else rules_to_df()
-        edited_map = st.data_editor(map_df, num_rows="dynamic", use_container_width=True, height=280)
+        with st.expander("Provider mapping controls", expanded=False):
+            st.caption("Provider mapping is the control point for grouping services into brands/providers. Open only when you need to update or download the mapping file.")
+            uploaded_map = st.file_uploader("Upload provider_mapping.csv", type=["csv"], key="map")
+            map_df = pd.read_csv(uploaded_map) if uploaded_map else rules_to_df()
+            edited_map = st.data_editor(map_df, num_rows="dynamic", use_container_width=True, height=280)
+            st.download_button("Download mapping CSV", edited_map.to_csv(index=False), "provider_mapping.csv", "text/csv")
         provider_rules = df_to_rules(edited_map)
-        st.download_button("Download mapping CSV", edited_map.to_csv(index=False), "provider_mapping.csv", "text/csv")
         st.divider()
         hist_actions, hist_breaches, runs = load_history()
         st.header("History manager")
@@ -618,4 +639,6 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+
     main()
