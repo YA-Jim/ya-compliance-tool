@@ -103,7 +103,7 @@ html, body, [data-testid="stAppViewContainer"]{
 .ya-title p{margin:4px 0 0 0; color:#eaf6f8; font-size:16px;}
 .ya-version{background:#eaf6f8; border:1px solid #b8dce1; color:#00504f; border-radius:999px; padding:8px 12px; font-weight:900; font-size:12px; white-space:nowrap;}
 .ya-divider{height:4px; border-radius:99px; background:linear-gradient(90deg,#ffffff,#b8dce1,rgba(255,255,255,.15)); margin:12px 0 4px;}
-.ya-note{background:rgba(234,246,248,.14); border-left:5px solid #ffffff; padding:12px 14px; border-radius:12px; color:#ffffff; margin:12px 0 4px;}
+.ya-note{background:transparent; border:0; padding:4px 0 0 0; border-radius:0; color:#ffffff; margin:8px 0 4px;}
 .ya-disclaimer{margin-top:10px; font-size:12px; line-height:1.4; color:#ffffff; opacity:.92;}
 h1,h2,h3, h4, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3{color:#ffffff!important; font-weight:900!important;}
 p, li, .stMarkdown, .stCaption, [data-testid="stCaptionContainer"]{color:#ffffff!important;}
@@ -136,6 +136,37 @@ label, [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p{color:#fff
 .ya-warning{background:#fff8cc; border:1px solid #fff200; color:#4c4300; border-radius:14px; padding:12px 14px;}
 [data-testid="stDataFrame"]{background:#ffffff; border-radius:14px; overflow:hidden;}
 input, textarea, select{border-radius:12px!important;}
+
+/* File uploader browse buttons */
+[data-testid="stFileUploader"] button {
+  background:linear-gradient(180deg,var(--ya-teal-button),#4bb6bf) !important;
+  color:#00393c !important;
+  border:0 !important;
+  border-radius:12px !important;
+  font-weight:900 !important;
+  box-shadow:0 5px 0 #1d6d75, 0 10px 18px rgba(0,0,0,.18) !important;
+}
+[data-testid="stFileUploader"] button:hover {
+  background:linear-gradient(180deg,var(--ya-teal-button-hover),#5fcbd3) !important;
+  color:#002f32 !important;
+}
+[data-testid="stFileUploaderDropzone"] {
+  background:rgba(234,246,248,.14) !important;
+  border:1px dashed rgba(255,255,255,.42) !important;
+  border-radius:16px !important;
+}
+[data-testid="stFileUploaderDropzone"] svg,
+[data-testid="stFileUploaderDropzone"] path {
+  color:#6fc7cf !important;
+  fill:#6fc7cf !important;
+}
+[data-testid="stExpander"]{
+  background:rgba(0,80,79,.22) !important;
+  border:1px solid rgba(255,255,255,.24) !important;
+  border-radius:18px !important;
+}
+[data-testid="stExpander"] summary p{color:#ffffff!important; font-weight:900!important;}
+
 </style>
 """
 st.markdown(YA_CSS, unsafe_allow_html=True)
@@ -500,40 +531,26 @@ def main():
     init_db()
     render_header()
 
-    with st.sidebar:
-        st.image(LOGO_URL, width=190)
-        st.header("Controls")
-        with st.expander("Provider mapping controls", expanded=False):
-            st.caption("Provider mapping is the control point for grouping services into brands/providers. Open only when you need to update or download the mapping file.")
-            uploaded_map = st.file_uploader("Upload provider_mapping.csv", type=["csv"], key="map")
-            map_df = pd.read_csv(uploaded_map) if uploaded_map else rules_to_df()
-            edited_map = st.data_editor(map_df, num_rows="dynamic", use_container_width=True, height=280)
-            st.download_button("Download mapping CSV", edited_map.to_csv(index=False), "provider_mapping.csv", "text/csv")
-        provider_rules = df_to_rules(edited_map)
-        st.divider()
-        hist_actions, hist_breaches, runs = load_history()
-        st.header("History manager")
-        st.caption(f"Saved runs: {len(runs)}")
-        if not runs.empty:
-            run_labels = [f"{r['quarter']} — {r['processed_at']} — {r['actions_count']} actions" for _, r in runs.iterrows()]
-            selected_delete = st.selectbox("Delete a saved run", [""] + run_labels)
-            if selected_delete:
-                idx = run_labels.index(selected_delete)
-                run_id_to_delete = runs.iloc[idx]["run_id"]
-                if st.button("Delete selected run"):
-                    delete_run(run_id_to_delete)
-                    st.success("Deleted. Refreshing…")
-                    st.rerun()
-
     hist_actions, hist_breaches, runs = load_history()
 
     st.markdown("<div class='ya-section-card'>", unsafe_allow_html=True)
-    st.subheader("1. Add a quarterly report batch")
+    st.subheader("Upload & Controls")
+
+    with st.expander("Provider mapping controls", expanded=False):
+        st.caption("Provider mapping groups service names into provider/brand groups. Keep this collapsed unless you need to update or download the mapping file.")
+        uploaded_map = st.file_uploader("Upload provider_mapping.csv", type=["csv"], key="map")
+        map_df = pd.read_csv(uploaded_map) if uploaded_map else rules_to_df()
+        edited_map = st.data_editor(map_df, num_rows="dynamic", use_container_width=True, height=280)
+        st.download_button("Download provider mapping CSV", edited_map.to_csv(index=False), "provider_mapping.csv", "text/csv")
+
+    provider_rules = df_to_rules(edited_map)
+
     colq1, colq2 = st.columns([1, 1])
     with colq1:
         quarter = st.text_input("Quarter label", value="Q2 FY25/26 — Oct–Dec 2025")
     with colq2:
         st.markdown("<span class='ya-pill'>Manual upload</span><span class='ya-pill'>Saved history</span><span class='ya-pill'>Excel export</span>", unsafe_allow_html=True)
+
     c1, c2 = st.columns(2)
     with c1:
         service_enforcement = st.file_uploader("Service Enforcement Action Information PDF", type=["pdf"], key="service")
@@ -542,7 +559,26 @@ def main():
         service_cancel = st.file_uploader("Service Cancellations PDF", type=["pdf"], key="scancel")
         suspension = st.file_uploader("Involuntary Suspensions PDF", type=["pdf"], key="susp")
 
-    if st.button("Process uploaded reports"):
+    action_col, history_col = st.columns([1, 1])
+    with action_col:
+        process_clicked = st.button("Process uploaded reports")
+    with history_col:
+        with st.expander("History manager", expanded=False):
+            st.caption(f"Saved runs: {len(runs)}")
+            if not runs.empty:
+                run_labels = [f"{r['quarter']} — {r['processed_at']} — {r['actions_count']} actions" for _, r in runs.iterrows()]
+                selected_delete = st.selectbox("Delete a saved run", [""] + run_labels)
+                if selected_delete:
+                    idx = run_labels.index(selected_delete)
+                    run_id_to_delete = runs.iloc[idx]["run_id"]
+                    if st.button("Delete selected run"):
+                        delete_run(run_id_to_delete)
+                        st.success("Deleted. Refreshing…")
+                        st.rerun()
+            else:
+                st.caption("No saved runs yet.")
+
+    if process_clicked:
         uploads = [
             (service_enforcement, "Service Enforcement"),
             (provider_cancel, "Provider Approval Cancellation"),
@@ -555,7 +591,8 @@ def main():
                 if file is None:
                     continue
                 a, b = parse_pdf(file, quarter, rtype, provider_rules)
-                all_actions.append(a); all_breaches.append(b)
+                all_actions.append(a)
+                all_breaches.append(b)
         actions = pd.concat(all_actions, ignore_index=True) if all_actions else pd.DataFrame()
         breaches = pd.concat(all_breaches, ignore_index=True) if all_breaches else pd.DataFrame()
         if actions.empty:
@@ -566,6 +603,7 @@ def main():
             st.session_state["latest_breaches"] = breaches
             st.success(f"Processed and saved: {len(actions)} actions and {len(breaches)} breach references.")
             st.rerun()
+
     st.markdown("</div>", unsafe_allow_html=True)
 
     hist_actions, hist_breaches, runs = load_history()
@@ -588,7 +626,7 @@ def main():
     q_summary = quarter_summary(show_actions, show_breaches)
     action_type_summary = show_actions.groupby(["quarter", "action_type"]).size().reset_index(name="Count").sort_values(["quarter", "Count"], ascending=[True, False])
 
-    st.subheader("2. Executive position")
+    st.subheader("Executive position")
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Actions", f"{len(show_actions):,}")
     k2.metric("Breach references", f"{len(show_breaches):,}")
@@ -639,6 +677,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
-
     main()
