@@ -18,7 +18,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v2.6 — Polished Upload Review"
+APP_VERSION = "v2.7 — Polished Upload Review"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -300,137 +300,88 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 
 
 
-/* v2.6 polished upload review */
-.ya-review-shell{
-  margin:16px 0 10px;
-}
+
+/* v2.7 compact upload review table */
+.ya-review-shell{margin:16px 0 12px;}
 .ya-review-intro{
-  background:rgba(255,255,255,.16);
+  background:rgba(255,255,255,.14);
   border:1px solid rgba(255,255,255,.28);
   border-radius:22px;
   padding:16px 18px;
   box-shadow:0 12px 28px rgba(0,0,0,.12);
-  backdrop-filter:blur(10px);
 }
-.ya-review-eyebrow{
-  color:#ffffff!important;
-  font-weight:950;
-  font-size:18px;
-  letter-spacing:-.01em;
-}
-.ya-review-copy{
-  color:#d9f4f6!important;
-  font-size:13px;
-  margin-top:2px;
-}
-.ya-review-card{
+.ya-review-eyebrow{color:#ffffff!important;font-weight:950;font-size:22px;letter-spacing:-.02em;}
+.ya-review-copy{color:#d9f4f6!important;font-size:13px;margin-top:3px;}
+.ya-review-table{
   background:rgba(255,255,255,.96);
   border:1px solid rgba(255,255,255,.72);
   border-radius:22px;
-  padding:16px 18px 18px;
-  margin:14px 0;
-  box-shadow:0 14px 28px rgba(0,0,0,.16);
+  box-shadow:0 16px 34px rgba(0,0,0,.16);
+  padding:10px 14px;
+  margin:16px 0 18px;
 }
-.ya-file-block{
-  display:flex;
-  align-items:center;
-  gap:12px;
-  margin-bottom:12px;
-  padding-bottom:12px;
-  border-bottom:1px solid #d9ebef;
-}
-.ya-file-icon{
-  width:46px;
-  height:46px;
-  border-radius:14px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  background:#eaf6f8;
+.ya-review-header{
+  background:#eef6f8;
+  border-radius:16px;
+  padding:10px 12px;
+  margin-bottom:4px;
   color:#00504f!important;
-  font-size:11px;
-  font-weight:950;
-  border:1px solid #b8dce1;
-}
-.ya-file-name{
-  color:#10242a!important;
-  font-size:15px;
-  line-height:1.25;
-  font-weight:900;
-  overflow-wrap:anywhere;
-}
-.ya-file-sub{
-  color:#536b72!important;
   font-size:12px;
-  margin-top:3px;
-}
-.ya-file-sub strong{color:#00504f!important;}
-.ya-review-card [data-testid="column"]{padding:0 .35rem!important;}
-.ya-review-card [data-testid="stCaptionContainer"],
-.ya-review-card [data-testid="stCaptionContainer"] *{
-  color:#00504f!important;
-  font-size:11px!important;
-  font-weight:950!important;
+  font-weight:950;
   text-transform:uppercase;
   letter-spacing:.04em;
 }
-.ya-review-card [data-baseweb="select"]{
-  min-height:44px!important;
-  border:1px solid #c9dde1!important;
-  border-radius:14px!important;
-  background:#f8fbfc!important;
+.ya-review-row{
+  border-bottom:1px solid #dcebee;
+  padding:8px 0 8px;
 }
-.ya-review-card [data-baseweb="select"] *{
+.ya-review-row.last{border-bottom:none;}
+.ya-review-file{
   color:#10242a!important;
-  font-size:14px!important;
-  font-weight:700!important;
+  font-size:13px;
+  font-weight:850;
+  line-height:1.2;
+  overflow-wrap:anywhere;
+  padding-top:10px;
 }
-.ya-status-badge{
-  display:inline-block;
-  padding:10px 12px;
-  border-radius:999px;
-  font-size:12px;
-  font-weight:950;
-  line-height:1.15;
-  max-width:100%;
-}
-.ya-status-badge.ready{background:#e8fff3; color:#006b3d!important; border:1px solid #7ce0ad;}
-.ya-status-badge.check{background:#fff5dc; color:#805300!important; border:1px solid #ffd27a;}
-.ya-status-badge.duplicate{background:#ffecec; color:#a61616!important; border:1px solid #ff9d9d;}
-.ya-review-card .stButton>button{
-  width:44px!important;
-  height:44px!important;
-  min-height:44px!important;
-  padding:0!important;
-  border-radius:14px!important;
-  background:#fff4f3!important;
-  color:#b42318!important;
-  border:1px solid #ffb4ad!important;
-  box-shadow:0 4px 10px rgba(180,35,24,.12)!important;
-  font-size:17px!important;
-}
-.ya-review-card .stButton>button:hover{
-  background:#ffe7e5!important;
-  color:#7a130b!important;
-  transform:translateY(-1px)!important;
-}
-.ya-review-card .stButton>button:active{
-  transform:translateY(1px)!important;
-  box-shadow:none!important;
-}
-.ya-removed-note{
-  background:#eaf6f8;
-  color:#00504f!important;
-  border:1px solid #b8dce1;
-  border-radius:16px;
-  padding:12px 14px;
+.ya-review-existing,.ya-review-status-text{
+  color:#10242a!important;
+  font-size:13px;
   font-weight:800;
-  margin:12px 0 18px;
+  padding-top:10px;
 }
-@media(max-width:900px){
-  .ya-review-card{padding:14px;}
-  .ya-file-name{font-size:13px;}
+.ya-review-status-text.ready{color:#006b3d!important;}
+.ya-review-status-text.check{color:#805300!important;}
+.ya-review-status-text.duplicate{color:#a61616!important;}
+.ya-review-table [data-testid="column"]{padding:0 .25rem!important;}
+.ya-review-table [data-baseweb="select"]{
+  min-height:40px!important;
+  border:1px solid #c6dce0!important;
+  border-radius:12px!important;
+  background:#ffffff!important;
 }
+.ya-review-table [data-baseweb="select"] *{
+  color:#10242a!important;
+  font-size:13px!important;
+  font-weight:650!important;
+}
+.ya-review-table .stButton>button{
+  width:40px!important;height:40px!important;min-height:40px!important;padding:0!important;
+  border-radius:12px!important;background:#fff4f3!important;color:#b42318!important;
+  border:1px solid #ffb4ad!important;box-shadow:0 4px 10px rgba(180,35,24,.10)!important;
+  font-size:16px!important;
+}
+.ya-review-table .stButton>button:hover{background:#ffe7e5!important;color:#7a130b!important;transform:translateY(-1px)!important;}
+.ya-removed-note{background:#eaf6f8;color:#00504f!important;border:1px solid #b8dce1;border-radius:16px;padding:12px 14px;font-weight:800;margin:12px 0 18px;}
+/* Stop dropdown/popover from dimming or tinting the page */
+[data-baseweb="modal"], [data-baseweb="modal"] > div, [data-baseweb="layer"], div[role="presentation"]{background:transparent!important;opacity:1!important;filter:none!important;}
+[data-baseweb="popover"]{z-index:999999!important;opacity:1!important;filter:none!important;}
+[data-baseweb="popover"] *, [data-baseweb="menu"] *, [role="listbox"] *{opacity:1!important;filter:none!important;}
+[data-baseweb="popover"] ul, [data-baseweb="menu"], [role="listbox"]{background:#ffffff!important;color:#10242a!important;max-height:360px!important;overflow:auto!important;}
+[data-baseweb="popover"] li, [role="option"]{color:#10242a!important;background:#ffffff!important;}
+[data-baseweb="popover"] li:hover, [role="option"]:hover{background:#eaf6f8!important;color:#00504f!important;}
+.stApp, [data-testid="stAppViewContainer"], .main, .block-container{opacity:1!important;filter:none!important;}
+@media(max-width:1000px){.ya-review-file{font-size:12px}.ya-review-table{padding:8px}.ya-review-header{display:none}}
 
 /* Hide Streamlit menu/footer */
 #MainMenu, footer{visibility:hidden;}
@@ -971,7 +922,7 @@ def _file_row_key(file_name: str) -> str:
 
 
 def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
-    """Polished upload review editor with removable file cards and locked dropdowns."""
+    """Compact upload review editor: one row per file, editable quarter/type, trash remove."""
     if review_df is None or review_df.empty:
         return pd.DataFrame()
 
@@ -1016,42 +967,40 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
     st.markdown("""
     <div class='ya-review-shell'>
       <div class='ya-review-intro'>
-        <div>
-          <div class='ya-review-eyebrow'>Upload review</div>
-          <div class='ya-review-copy'>Confirm the quarter and report type before processing. Remove anything you do not want included.</div>
-        </div>
+        <div class='ya-review-eyebrow'>Upload review</div>
+        <div class='ya-review-copy'>Confirm the quarter and report type before processing. Each file stays on one row. Use the trash icon to remove anything that should not be included.</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("<div class='ya-review-table'>", unsafe_allow_html=True)
+    h0,h1,h2,h3,h4,h5 = st.columns([0.45, 3.2, 1.85, 2.15, .75, 1.9], vertical_alignment="center")
+    with h0: st.markdown("<div class='ya-review-header'>&nbsp;</div>", unsafe_allow_html=True)
+    with h1: st.markdown("<div class='ya-review-header'>File</div>", unsafe_allow_html=True)
+    with h2: st.markdown("<div class='ya-review-header'>Quarter</div>", unsafe_allow_html=True)
+    with h3: st.markdown("<div class='ya-review-header'>Report type</div>", unsafe_allow_html=True)
+    with h4: st.markdown("<div class='ya-review-header'>Existing</div>", unsafe_allow_html=True)
+    with h5: st.markdown("<div class='ya-review-header'>Status</div>", unsafe_allow_html=True)
 
     for i, row in active_df.iterrows():
         fname = str(row["File"])
         rk = _file_row_key(fname)
         status = str(row.get("Status", ""))
         existing = int(row.get("Existing rows", 0) or 0)
-        status_class = "ready" if status.lower() == "ready" else ("duplicate" if existing else "check")
-        file_display = fname if len(fname) <= 78 else fname[:38] + "…" + fname[-32:]
+        status_class = "ready" if status.lower() == "ready" else ("duplicate" if existing or "Duplicate" in status else "check")
+        file_display = fname if len(fname) <= 82 else fname[:48] + "…" + fname[-26:]
 
-        st.markdown(f"""
-        <div class='ya-review-card'>
-          <div class='ya-file-block'>
-            <div class='ya-file-icon'>PDF</div>
-            <div>
-              <div class='ya-file-name'>{file_display}</div>
-              <div class='ya-file-sub'>Existing rows: <strong>{existing}</strong></div>
-            </div>
-          </div>
-        """, unsafe_allow_html=True)
-
-        c_trash, c_quarter, c_type, c_status = st.columns([0.65, 2.1, 2.1, 2.0], vertical_alignment="center")
-        with c_trash:
+        st.markdown(f"<div class='ya-review-row {'last' if i == len(active_df)-1 else ''}'>", unsafe_allow_html=True)
+        c0,c1,c2,c3,c4,c5 = st.columns([0.45, 3.2, 1.85, 2.15, .75, 1.9], vertical_alignment="center")
+        with c0:
             if st.button("🗑", key=f"remove_upload_{rk}", help=f"Remove {fname} from this upload"):
                 st.session_state.setdefault("upload_removed_files", [])
                 if fname not in st.session_state["upload_removed_files"]:
                     st.session_state["upload_removed_files"].append(fname)
                 st.rerun()
-        with c_quarter:
-            st.caption("Quarter")
+        with c1:
+            st.markdown(f"<div class='ya-review-file'>{file_display}</div>", unsafe_allow_html=True)
+        with c2:
             current_q = st.session_state.get(f"review_quarter_{rk}", "— Select quarter —")
             q_opts = quarter_options()
             st.selectbox(
@@ -1061,8 +1010,7 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
                 key=f"review_quarter_{rk}",
                 label_visibility="collapsed",
             )
-        with c_type:
-            st.caption("Report type")
+        with c3:
             current_t = st.session_state.get(f"review_type_{rk}", "— Select report type —")
             st.selectbox(
                 "Report type",
@@ -1071,11 +1019,12 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
                 key=f"review_type_{rk}",
                 label_visibility="collapsed",
             )
-        with c_status:
-            st.caption("Status")
-            st.markdown(f"<span class='ya-status-badge {status_class}'>{status}</span>", unsafe_allow_html=True)
-
+        with c4:
+            st.markdown(f"<div class='ya-review-existing'>{existing}</div>", unsafe_allow_html=True)
+        with c5:
+            st.markdown(f"<div class='ya-review-status-text {status_class}'>{status}</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if removed:
         st.markdown(f"<div class='ya-removed-note'>{len(removed)} file(s) removed from this upload consideration.</div>", unsafe_allow_html=True)
