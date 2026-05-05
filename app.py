@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.4 — Pivot reporting + auto mapping"
+APP_VERSION = "v3.6 — Clean reports + law glossary"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -1305,20 +1305,33 @@ def normalise_provider_stem(service_name: str) -> str:
         name = " ".join(words[:5])
     return name[:70] if name else "Unknown / Needs Mapping"
 
-def clean_provider_name(raw: str) -> str:
-    if not raw:
-        return "Unknown / Needs Mapping"
-    cleaned = re.sub(r"\s+", " ", str(raw)).strip(" -,;:")
+def looks_like_action_text(raw: str) -> bool:
+    """Detect rows where PDF text extraction put action/reason text into the provider column."""
+    cleaned = re.sub(r"\s+", " ", str(raw or "")).strip(" -,;:")
     low = cleaned.lower()
+    if not cleaned:
+        return True
     bad_bits = [
-        "compliance notice", "due to non-compliance", "national law", "national regulations",
-        "emergency action", "enforceable undertaking", "section 177", "section 179",
-        "provider approval cancelled", "service suspended", "grounds for", "regulatory authority",
-        "law ", "regulation ", "offence to", "offence relating", "continued provision"
+        "compliance notice", "compliance due", "due to non-compliance", "due to non compliance",
+        "national law", "national regulations", "emergency action", "emergency an education",
+        "enforceable undertaking", "enforceable due", "section 177", "section 179", "section 179a",
+        "provider approval cancelled", "service approval", "service suspended", "grounds for",
+        "regulatory authority", "offence to", "offence relating", "continued provision",
+        "an education and care service", "immediate risk", "non-compliance posed", "children's health",
+        "cancelled under", "decision to cancel", "the approved provider", "the regulatory authority"
     ]
     if any(bit in low for bit in bad_bits):
-        return "Unknown / Needs Mapping"
-    if len(cleaned) > 80:
+        return True
+    if re.search(r"\b(law|regulation|section)\s*\d", low):
+        return True
+    if len(cleaned) > 85:
+        return True
+    return False
+
+
+def clean_provider_name(raw: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(raw or "")).strip(" -,;:")
+    if looks_like_action_text(cleaned):
         return "Unknown / Needs Mapping"
     return cleaned or "Unknown / Needs Mapping"
 
@@ -2062,7 +2075,184 @@ def render_user_details_page():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+
+LAW_GLOSSARY_BASE = {
+    "Law 51": ("Conditions on service approval", "The service did not comply with a condition attached to its approval."),
+    "Law 56": ("Notice of change to nominated supervisor", "A required nominated supervisor change notice was not managed correctly."),
+    "Law 161": ("Nominated supervisor", "The service did not have the required nominated supervisor arrangement in place."),
+    "Law 161A": ("Nominated supervisor minimum requirements", "A nominated supervisor did not meet prescribed minimum requirements."),
+    "Law 162": ("Responsible person present", "The service operated without the required responsible person present."),
+    "Law 162A": ("Child protection training", "A person in day-to-day charge or nominated supervisor did not meet child protection training requirements."),
+    "Law 165": ("Inadequate supervision", "Children were not adequately supervised."),
+    "Law 166": ("Inappropriate discipline", "A child was subjected to, or exposed to, inappropriate discipline."),
+    "Law 166A": ("Inappropriate conduct", "A child was subjected to inappropriate conduct under NSW provisions."),
+    "Law 167": ("Protection from harm and hazards", "The service failed to protect children from harm or likely hazards."),
+    "Law 168": ("Required programs", "Required educational program obligations were not met."),
+    "Law 169": ("Staffing arrangements", "Staffing arrangement obligations were not met."),
+    "Law 170": ("Unauthorised persons", "Unauthorised persons were present at the service premises."),
+    "Law 172": ("Display prescribed information", "Required information was not displayed as required."),
+    "Law 173": ("Notify certain circumstances", "Required notifications to the Regulatory Authority were not made correctly."),
+    "Law 174": ("Notify certain information", "Required information was not notified to the Regulatory Authority."),
+    "Law 175": ("Keep enrolment/other documents", "Required enrolment or prescribed documents were not kept."),
+    "Law 177": ("Compliance notices", "Compliance notice requirements were not met."),
+    "Law 182": ("Prohibition notice grounds", "A prohibition-notice related ground was identified."),
+    "Law 223B": ("NSW Minister direction", "A NSW Ministerial direction requirement was not met."),
+    "Regulation 35": ("Notice of nominated supervisor change", "Required notice about nominated supervisor changes was not managed correctly."),
+    "Regulation 55": ("Quality improvement plan", "Quality improvement plan requirements were not met."),
+    "Regulation 73": ("Educational program", "Educational program requirements were not met."),
+    "Regulation 74": ("Child assessments/evaluations", "Child assessment or evaluation documentation requirements were not met."),
+    "Regulation 75": ("Program information available", "Information about the educational program was not kept available."),
+    "Regulation 76": ("Program information to parents", "Educational program information was not provided to parents as required."),
+    "Regulation 77": ("Health, hygiene and safe food", "Health, hygiene or safe food practice requirements were not met."),
+    "Regulation 78": ("Food and beverages", "Food and beverage requirements were not met."),
+    "Regulation 79": ("Food service", "Service food provision requirements were not met."),
+    "Regulation 80": ("Weekly menu", "Weekly menu requirements were not met."),
+    "Regulation 83": ("Alcohol/drugs", "Staff/family day care educator alcohol or drug restrictions were breached."),
+    "Regulation 84": ("Child protection law awareness", "Child protection law awareness requirements were not met."),
+    "Regulation 84A": ("Sleep and rest", "Sleep and rest requirements were not met."),
+    "Regulation 84C": ("Sleep/rest risk assessment", "Required sleep and rest risk assessment was missing or inadequate."),
+    "Regulation 84D": ("Bassinets", "Bassinets prohibition requirements were breached."),
+    "Regulation 85": ("Incident/injury/trauma/illness policies", "Incident, injury, trauma and illness policy requirements were not met."),
+    "Regulation 86": ("Notify parents of incident/injury/trauma/illness", "Parents were not notified as required."),
+    "Regulation 87": ("Incident/injury/trauma/illness record", "Required incident/injury/trauma/illness records were incomplete or not kept."),
+    "Regulation 89": ("First aid kits", "First aid kit requirements were not met."),
+    "Regulation 90": ("Medical conditions policy", "Medical conditions policy requirements were not met."),
+    "Regulation 92": ("Medication record", "Medication record requirements were not met."),
+    "Regulation 97": ("Emergency and evacuation procedures", "Emergency/evacuation procedure requirements were not met."),
+    "Regulation 99": ("Children leaving premises", "Children leaving the premises requirements were not met."),
+    "Regulation 100": ("Excursion risk assessment", "Required excursion risk assessment was not conducted correctly."),
+    "Regulation 101": ("Conduct of excursion risk assessment", "Excursion risk assessment requirements were not met."),
+    "Regulation 102": ("Excursion authorisation", "Excursion authorisation requirements were not met."),
+    "Regulation 102B": ("Transport risk assessment", "Transport risk assessment was not conducted before transporting children."),
+    "Regulation 102C": ("Transport risk assessment conduct", "Transport risk assessment requirements were not met."),
+    "Regulation 102D": ("Transport authorisation", "Authorisation to transport children was not properly obtained."),
+    "Regulation 102AAC": ("Safe arrival risk assessment", "Safe arrival policy/procedure risk assessment requirements were not met."),
+    "Regulation 103": ("Premises/equipment safe and clean", "Premises, furniture or equipment were not safe, clean or in good repair."),
+    "Regulation 104": ("Fencing", "Fencing requirements were not met."),
+    "Regulation 105": ("Furniture/materials/equipment", "Furniture, materials or equipment requirements were not met."),
+    "Regulation 109": ("Toilet and hygiene facilities", "Toilet or hygiene facility requirements were not met."),
+    "Regulation 110": ("Ventilation and natural light", "Ventilation or natural light requirements were not met."),
+    "Regulation 113": ("Outdoor space natural environment", "Outdoor natural environment requirements were not met."),
+    "Regulation 114": ("Outdoor shade", "Outdoor shade requirements were not met."),
+    "Regulation 115": ("Premises designed for supervision", "Premises design did not adequately facilitate supervision."),
+    "Regulation 116": ("FDC residence/venue assessment", "Family day care residence/venue assessment requirements were not met."),
+    "Regulation 116A": ("Swimming pool/water hazard inspection", "Required inspection of swimming pools/water hazards was not met."),
+    "Regulation 116B": ("Inspection report", "Inspection report requirements were not met."),
+    "Regulation 116C": ("Swimming pool fencing compliance", "Swimming pool fencing compliance requirements were not met."),
+    "Regulation 117A": ("Person in day-to-day charge", "Placement of a person in day-to-day charge requirements were not met."),
+    "Regulation 117B": ("Day-to-day charge minimum requirements", "Minimum requirements for a person in day-to-day charge were not met."),
+    "Regulation 118": ("Educational leader", "Educational leader requirements were not met."),
+    "Regulation 120": ("Under-18 educator supervision", "Educators under 18 were not supervised as required."),
+    "Regulation 122": ("Educators working directly with children", "Educator-to-child ratio counting requirements were not met."),
+    "Regulation 123": ("Educator-to-child ratios", "Educator-to-child ratio requirements were not met."),
+    "Regulation 124": ("FDC educator child numbers", "Family day care child number limits were not met."),
+    "Regulation 126": ("Educator qualifications", "General educator qualification requirements were not met."),
+    "Regulation 136": ("First aid qualifications", "First aid qualification requirements were not met."),
+    "Regulation 143A": ("FDC educator minimum requirements", "Family day care educator minimum requirements were not met."),
+    "Regulation 145": ("Staff record", "Staff record requirements were not met."),
+    "Regulation 146": ("Nominated supervisor", "Nominated supervisor requirements were not met."),
+    "Regulation 147": ("Staff members", "Staff member requirements were not met."),
+    "Regulation 149": ("Volunteers/students", "Volunteer/student requirements were not met."),
+    "Regulation 150": ("Responsible person", "Responsible person requirements were not met."),
+    "Regulation 151": ("Educators working directly records", "Records of educators working directly with children were not kept correctly."),
+    "Regulation 155": ("Interactions with children", "Interactions with children requirements were not met."),
+    "Regulation 156": ("Relationships in groups", "Relationships in groups requirements were not met."),
+    "Regulation 158": ("Children attendance record by provider", "Children's attendance records were not kept by the approved provider as required."),
+    "Regulation 159": ("FDC attendance record", "Family day care attendance records were not kept as required."),
+    "Regulation 160": ("Child enrolment records", "Child enrolment records were not kept correctly."),
+    "Regulation 161": ("Authorisations in enrolment record", "Required authorisations were not kept in enrolment records."),
+    "Regulation 162": ("Health information in enrolment record", "Required health information was not kept in enrolment records."),
+    "Regulation 163": ("FDC residents/assistants fit and proper", "Family day care residents or assistants were not assessed/managed as fit and proper."),
+    "Regulation 165": ("Visitor record", "Visitor records were not kept correctly."),
+    "Regulation 167": ("Compliance record", "Service compliance records were not kept correctly."),
+    "Regulation 168": ("Policies and procedures", "Required policies and procedures were not in place."),
+    "Regulation 169": ("Additional FDC policies/procedures", "Additional family day care policy requirements were not met."),
+    "Regulation 170": ("Policies/procedures followed", "Required policies and procedures were not followed."),
+    "Regulation 172": ("Notify policy/procedure change", "Required notice of policy/procedure changes was not made."),
+    "Regulation 173": ("Prescribed information displayed", "Required prescribed information was not displayed."),
+    "Regulation 173A": ("FDC prescribed information displayed", "Family day care prescribed information display requirements were not met."),
+    "Regulation 174": ("Time to notify circumstances", "Required notifications were not made within required timeframes."),
+    "Regulation 175": ("Prescribed information to RA", "Prescribed information was not notified to the Regulatory Authority."),
+    "Regulation 176": ("Time to notify information", "Required information was not notified within required timeframes."),
+    "Regulation 177": ("Documents kept by provider", "Prescribed enrolment or other documents were not kept by the provider."),
+    "Regulation 178": ("Documents kept by FDC educator", "Prescribed enrolment or other documents were not kept by the family day care educator."),
+    "Regulation 185": ("Law/regulations available", "The Law and Regulations were not available as required."),
+    "Regulation 272": ("Early childhood teachers", "Early childhood teacher requirements were not met."),
+}
+
+
+def canonical_breach_code(code: str) -> str:
+    txt = str(code or "").strip()
+    m = re.match(r"^(Law|Regulation)\s+([0-9]{2,3}[A-Z]*(?:AAC|AA|A|B|C|D)?)", txt, flags=re.I)
+    if not m:
+        return txt
+    return f"{m.group(1).title()} {m.group(2).upper()}"
+
+
+def clean_loaded_frames(actions: pd.DataFrame, breaches: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Clean already-saved history at report time so old dirty uploads do not poison pivots."""
+    a = actions.copy() if actions is not None else pd.DataFrame()
+    b = breaches.copy() if breaches is not None else pd.DataFrame()
+    def fix_provider(row):
+        provider = str(row.get("provider", ""))
+        if provider and not looks_like_action_text(provider) and provider != "Unknown / Needs Mapping":
+            return provider
+        service = str(row.get("service_name", ""))
+        candidate = normalise_provider_stem(service)
+        if candidate and not looks_like_action_text(candidate):
+            return candidate
+        return "Unknown / Needs Mapping"
+    if not a.empty:
+        a["provider"] = a.apply(fix_provider, axis=1)
+    if not b.empty:
+        # Breaches often don't have service_name, so build action_id -> clean provider map from actions.
+        if not a.empty and "action_id" in a.columns:
+            mp = a.drop_duplicates("action_id").set_index("action_id")["provider"].to_dict()
+            b["provider"] = b.apply(lambda r: mp.get(r.get("action_id"), clean_provider_name(r.get("provider", ""))), axis=1)
+        else:
+            b["provider"] = b["provider"].apply(clean_provider_name)
+    return a, b
+
+
+def make_law_glossary(actions: pd.DataFrame, breaches: pd.DataFrame) -> pd.DataFrame:
+    """Build an exportable glossary of law/reg references found in uploaded data."""
+    if breaches is None or breaches.empty:
+        return pd.DataFrame(columns=["breach_code", "reference", "category", "plain_english", "times_breached", "sample_excerpt"])
+    b = breaches.copy()
+    b["breach_code"] = b["breach_code"].astype(str).map(canonical_breach_code)
+    counts = b.groupby(["breach_code", "classification"]).size().reset_index(name="times_breached")
+    # raw excerpts by action id
+    raw_by_action = {}
+    if actions is not None and not actions.empty and "raw_text" in actions.columns:
+        raw_by_action = actions.drop_duplicates("action_id").set_index("action_id")["raw_text"].astype(str).to_dict()
+    sample = {}
+    for _, r in b.iterrows():
+        code = r["breach_code"]
+        if code in sample:
+            continue
+        raw = raw_by_action.get(r.get("action_id"), "")
+        if raw:
+            # Try to capture the first line containing the code number.
+            num = re.sub(r"^(Law|Regulation)\s+", "", code)
+            lines = [re.sub(r"\s+", " ", ln).strip() for ln in raw.splitlines()]
+            found = next((ln for ln in lines if num in ln and ("Law" in ln or "Regulation" in ln or re.search(r"\b"+re.escape(num)+r"\b", ln))), "")
+            sample[code] = found[:220]
+    rows = []
+    for _, r in counts.sort_values("times_breached", ascending=False).iterrows():
+        code = r["breach_code"]
+        title, plain = LAW_GLOSSARY_BASE.get(code, ("Needs glossary mapping", "Review the sample excerpt and add a plain-English definition if this code is new."))
+        rows.append({
+            "breach_code": code,
+            "reference": title,
+            "category": r["classification"],
+            "plain_english": plain,
+            "times_breached": int(r["times_breached"]),
+            "sample_excerpt": sample.get(code, ""),
+        })
+    return pd.DataFrame(rows)
+
 def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame, runs: pd.DataFrame):
+    hist_actions, hist_breaches = clean_loaded_frames(hist_actions, hist_breaches)
     if hist_actions.empty:
         st.info("No data has been uploaded yet." + (" Go to Upload/Delete Files to start building history." if is_admin() else " Ask an admin to upload reports."))
         return
@@ -2071,16 +2261,18 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
     quarters_all = list(dict.fromkeys(hist_actions.sort_values("processed_at", ascending=False)["quarter"].astype(str).tolist()))
 
     st.markdown("### Report controls")
-    selected_quarters = st.multiselect(
-        "Quarters to include in executive position and reports",
-        quarters_all,
-        default=quarters_all[:4],
-        help="Select one, several, or all quarters. Executive position updates dynamically based on this selection.",
-        key="report_quarter_multiselect_v35",
-    )
-    if st.button("Select all uploaded quarters", key="select_all_quarters_v35"):
-        st.session_state["report_quarter_multiselect_v35"] = quarters_all
-        st.rerun()
+    use_all_quarters = st.checkbox("Use all uploaded quarters", value=False, key="use_all_uploaded_quarters_v36")
+    if use_all_quarters:
+        selected_quarters = quarters_all
+        st.markdown(f"<span class='ya-pill'>All-time view active: {len(selected_quarters)} quarters selected</span>", unsafe_allow_html=True)
+    else:
+        selected_quarters = st.multiselect(
+            "Quarters to include in executive position and reports",
+            quarters_all,
+            default=quarters_all[:4],
+            help="Select one, several, or all quarters. Executive position updates dynamically based on this selection.",
+            key="report_quarter_multiselect_v36",
+        )
 
     show_actions = hist_actions[hist_actions["quarter"].isin(selected_quarters)] if selected_quarters else hist_actions
     show_breaches = hist_breaches[hist_breaches["quarter"].isin(selected_quarters)] if selected_quarters and not hist_breaches.empty else hist_breaches
@@ -2113,13 +2305,16 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
         render_kpi_notes()
     st.markdown(f"<div class='ya-warning'><strong>{ya_position_text(rolling_summary)}</strong></div>", unsafe_allow_html=True)
 
-    tab_names = ["Dashboard", "Rolling view", "All time", "Pivot views", "Provider summary", "Law/Reg breakdown", "Raw extracted rows", "Export"]
+    tab_names = ["Dashboard", "Rolling view", "All time", "Pivot views", "Provider summary", "Law/Reg breakdown", "Law glossary", "Raw extracted rows", "Export"]
     tabs = st.tabs(tab_names)
 
     with tabs[0]:
         st.caption("Dashboard reflects the selected quarter(s).")
-        render_pie(action_category, "Actions by category", key="pie_actions_selected_v35")
-        render_pie(breach_category, "Breach references by category", key="pie_breaches_selected_v35")
+        pie_col1, pie_col2 = st.columns(2)
+        with pie_col1:
+            render_pie(action_category, "Actions by category", key="pie_actions_selected_v36")
+        with pie_col2:
+            render_pie(breach_category, "Breach references by category", key="pie_breaches_selected_v36")
         st.markdown("### Category tables")
         st.dataframe(action_category, use_container_width=True, hide_index=True, key="action_category_selected_v35")
         st.dataframe(breach_category, use_container_width=True, hide_index=True, key="breach_category_selected_v35")
@@ -2188,12 +2383,18 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
             st.dataframe(make_law_summary(sig_only), use_container_width=True, hide_index=True, key="serious_law_summary_v35")
 
     with tabs[6]:
-        st.markdown("### Extracted enforcement actions")
-        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True, key="raw_actions_v35")
-        st.markdown("### Extracted breach references")
-        st.dataframe(show_breaches, use_container_width=True, hide_index=True, key="raw_breaches_v35")
+        glossary_df = make_law_glossary(show_actions, show_breaches)
+        st.caption("Plain-English guide to every Law/Reg reference found in the selected data. Export includes the same sheet.")
+        st.dataframe(glossary_df, use_container_width=True, hide_index=True, key="law_glossary_v36")
+        st.download_button("Download law glossary CSV", glossary_df.to_csv(index=False), "law_glossary.csv", "text/csv", key="download_law_glossary_csv_v36")
 
     with tabs[7]:
+        st.markdown("### Extracted enforcement actions")
+        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True, key="raw_actions_v36")
+        st.markdown("### Extracted breach references")
+        st.dataframe(show_breaches, use_container_width=True, hide_index=True, key="raw_breaches_v36")
+
+    with tabs[8]:
         all_time_summary = make_provider_summary(hist_actions, hist_breaches)
         provider_pivot_actions = make_provider_pivot(hist_actions, hist_breaches, "Actions", all_quarters)
         provider_pivot_breaches = make_provider_pivot(hist_actions, hist_breaches, "Total breaches", all_quarters)
@@ -2213,6 +2414,7 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
             "Provider Breach Categories": provider_breach_category,
             "Quarter Trend": q_summary,
             "Law Reg Breakdown": law_summary,
+            "Law Glossary": make_law_glossary(show_actions, show_breaches),
             "Action Type Summary": action_type_summary,
             "Mapping Suggestions": mapping_suggestions,
             "Extracted Actions": show_actions.drop(columns=["raw_text"], errors="ignore"),
