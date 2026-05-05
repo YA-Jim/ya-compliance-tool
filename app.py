@@ -18,7 +18,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v2.3 — Admin Review Workflow"
+APP_VERSION = "v2.4 — Admin Review Workflow"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -120,6 +120,11 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 [data-baseweb="input"], [data-baseweb="select"], [data-baseweb="textarea"]{border-radius:12px!important; background:#ffffff!important; color:#10242a!important;}
 [data-baseweb="select"] *{color:#10242a!important;}
 [data-baseweb="popover"] *{color:#10242a!important;}
+[data-baseweb="menu"] *{color:#10242a!important; background:#ffffff!important;}
+[data-baseweb="menu"] li, [role="option"], [role="option"] *{color:#10242a!important; background:#ffffff!important;}
+[data-baseweb="menu"] li:hover, [role="option"]:hover{background:#eaf6f8!important;}
+/* Disabled buttons remain readable */
+.stButton>button:disabled,.stDownloadButton>button:disabled{background:#dceff2!important; color:#357b84!important; box-shadow:none!important; opacity:.95!important;}
 [data-baseweb="tag"]{background:#357b84!important; color:#fff!important; border-radius:8px!important;}
 [data-baseweb="tag"] span{color:#fff!important;}
 .stSelectbox div, .stMultiSelect div, .stTextInput div{color:#10242a!important;}
@@ -378,19 +383,23 @@ def logout_button():
             st.rerun()
 
 
-def render_admin_user_manager():
+def render_admin_user_manager_panel():
     if not is_admin():
+        st.info("Admin user management is available to admins only.")
         return
-    with st.popover("👤 Admin users", use_container_width=False):
-        st.caption("Only admins can create users/admins, change passwords, deactivate accounts, and view audit logs.")
-        con = sqlite3.connect(DB_PATH)
-        users_df = pd.read_sql_query("SELECT email, role, active, created_at, updated_at, created_by FROM users ORDER BY role, email", con)
-        logs_df = pd.read_sql_query("SELECT timestamp, user_email, role, action, detail FROM audit_logs ORDER BY timestamp DESC LIMIT 250", con)
-        con.close()
-        st.markdown("**Current users**")
-        st.dataframe(users_df, use_container_width=True, hide_index=True, key="admin_users_table")
+    st.markdown("### Admin users")
+    st.caption("Only admins can create users/admins, change passwords, deactivate accounts, and view audit logs.")
+    con = sqlite3.connect(DB_PATH)
+    users_df = pd.read_sql_query("SELECT email, role, active, created_at, updated_at, created_by FROM users ORDER BY role, email", con)
+    logs_df = pd.read_sql_query("SELECT timestamp, user_email, role, action, detail FROM audit_logs ORDER BY timestamp DESC LIMIT 250", con)
+    con.close()
 
-        st.markdown("**Create user / admin**")
+    st.markdown("#### Current users")
+    st.dataframe(users_df, use_container_width=True, hide_index=True, key="admin_users_table")
+
+    c_create, c_edit = st.columns(2)
+    with c_create:
+        st.markdown("#### Create user / admin")
         with st.form("create_user_form"):
             new_email = st.text_input("New user email", placeholder="name@youngacademics.com.au")
             new_role = st.selectbox("Role", ["user", "admin"], key="new_user_role")
@@ -418,13 +427,17 @@ def render_admin_user_manager():
                 except sqlite3.IntegrityError:
                     st.error("That user already exists.")
 
-        st.markdown("**Change password / role / status**")
+    with c_edit:
+        st.markdown("#### Change password / role / status")
         user_options = users_df["email"].tolist() if not users_df.empty else []
         if user_options:
             target = st.selectbox("Select user", user_options, key="admin_target_user")
+            target_row = users_df[users_df["email"].eq(target)].iloc[0] if target else None
+            role_index = ["user", "admin"].index(str(target_row["role"])) if target_row is not None and str(target_row["role"]) in ["user","admin"] else 0
+            status_index = 0 if target_row is not None and int(target_row["active"]) == 1 else 1
             with st.form("edit_user_form"):
-                new_role2 = st.selectbox("Role", ["user", "admin"], key="edit_user_role")
-                active2 = st.selectbox("Status", ["Active", "Inactive"], key="edit_user_status")
+                new_role2 = st.selectbox("Role", ["user", "admin"], index=role_index, key="edit_user_role")
+                active2 = st.selectbox("Status", ["Active", "Inactive"], index=status_index, key="edit_user_status")
                 new_pw2 = st.text_input("New password (leave blank to keep current)", type="password", key="edit_user_password")
                 update_user = st.form_submit_button("Update selected user")
             if update_user:
@@ -442,7 +455,7 @@ def render_admin_user_manager():
                     st.success("User updated.")
                     st.rerun()
 
-        st.markdown("**Recent audit logs**")
+    with st.expander("Recent audit logs", expanded=False):
         st.dataframe(logs_df, use_container_width=True, hide_index=True, key="admin_audit_logs_table")
 
 
@@ -1217,7 +1230,6 @@ def main():
     require_login()
     render_header()
     logout_button()
-    render_admin_user_manager()
 
     hist_actions, hist_breaches, runs = load_history()
 
@@ -1265,6 +1277,8 @@ def main():
             review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
         st.markdown("### Upload review")
         st.caption("Admin step: fix any unidentified quarter/report type before saving. Quarter and report type are dropdowns so the naming convention stays locked.")
+        review_df = review_df.copy()
+        review_df.insert(0, "Remove", False)
         review_df = st.data_editor(
             review_df,
             use_container_width=True,
@@ -1272,18 +1286,23 @@ def main():
             key="bulk_upload_review_editor",
             disabled=["File", "Existing rows", "Status"],
             column_config={
+                "Remove": st.column_config.CheckboxColumn("Remove", help="Tick to exclude this file from this upload."),
                 "Detected quarter": st.column_config.SelectboxColumn("Quarter", options=quarter_options(), required=True),
                 "Detected report type": st.column_config.SelectboxColumn("Report type", options=REPORT_TYPE_OPTIONS, required=True),
                 "Existing rows": st.column_config.NumberColumn("Existing rows", disabled=True),
                 "Status": st.column_config.TextColumn("Status", disabled=True),
             },
         )
-        review_df = recalc_upload_review(review_df)
-        st.dataframe(review_df, use_container_width=True, hide_index=True, key="bulk_upload_review_recalculated")
+        removed_count = int(review_df["Remove"].fillna(False).sum()) if "Remove" in review_df.columns else 0
+        active_review_df = review_df[~review_df["Remove"].fillna(False)].drop(columns=["Remove"], errors="ignore").copy()
+        active_review_df = recalc_upload_review(active_review_df)
+        review_df.loc[~review_df["Remove"].fillna(False), "Status"] = active_review_df["Status"].values if not active_review_df.empty else []
+        if removed_count:
+            st.info(f"{removed_count} file(s) marked for removal from this upload. They will not be processed or saved.")
 
-        ready_count = int((review_df["Status"] == "Ready").sum()) if not review_df.empty else 0
-        existing_count = int(review_df["Status"].astype(str).str.startswith("Already uploaded").sum()) if not review_df.empty else 0
-        blocked_count = len(review_df) - ready_count - existing_count
+        ready_count = int((active_review_df["Status"] == "Ready").sum()) if not active_review_df.empty else 0
+        existing_count = int(active_review_df["Status"].astype(str).str.startswith("Already uploaded").sum()) if not active_review_df.empty else 0
+        blocked_count = len(active_review_df) - ready_count - existing_count
         rc1, rc2, rc3 = st.columns(3)
         rc1.metric("Ready to save", ready_count)
         rc2.metric("Already uploaded", existing_count)
@@ -1332,7 +1351,11 @@ def main():
         else:
             if review_df.empty:
                 review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
-            review_df = recalc_upload_review(review_df)
+            if "Remove" in review_df.columns:
+                active_review_df = review_df[~review_df["Remove"].fillna(False)].drop(columns=["Remove"], errors="ignore").copy()
+            else:
+                active_review_df = review_df.copy()
+            review_df = recalc_upload_review(active_review_df)
 
             bad = review_df[review_df["Status"].astype(str).str.startswith("Needs check") | review_df["Status"].astype(str).eq("Duplicate in this upload batch")]
             if not bad.empty:
@@ -1346,7 +1369,11 @@ def main():
                 processed_files = 0
                 skipped_files = []
                 with st.spinner("Processing bulk upload: extracting rows, classifying breaches, grouping quarters, and saving history…"):
+                    files_to_process = {str(x) for x in review_df["File"].tolist()}
                     for f in bulk_files:
+                        if f.name not in files_to_process:
+                            skipped_files.append(f"{f.name} — removed from upload review")
+                            continue
                         row = review_df[review_df["File"].eq(f.name)].iloc[0]
                         quarter = str(row["Detected quarter"])
                         rtype = str(row["Detected report type"])
@@ -1458,7 +1485,10 @@ def main():
     provider_qoq = make_provider_qoq_summary(show_actions, show_breaches)
     action_type_qoq, breach_type_qoq = make_type_qoq_summary(show_actions, show_breaches)
 
-    tabs = st.tabs(["Dashboard", "Current quarter", "Rolling 4-quarter view", "Provider summary", "Quarter-on-quarter", "Law/Reg breakdown", "Raw extracted rows", "Export"])
+    tab_names = ["Dashboard", "Current quarter", "Rolling 4-quarter view", "Provider summary", "Quarter-on-quarter", "Law/Reg breakdown", "Raw extracted rows", "Export"]
+    if is_admin():
+        tab_names.append("Admin users")
+    tabs = st.tabs(tab_names)
     with tabs[0]:
         st.caption(f"Current selected quarter: {current_quarter}")
         d1, d2 = st.columns(2)
@@ -1583,6 +1613,10 @@ def main():
         xlsx = to_excel_bytes(sheets)
         st.download_button("Download Excel report", xlsx, "YA_Compliance_Benchmark_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_report")
         st.download_button("Download full history database", open(DB_PATH, "rb").read(), "compliance_history.sqlite3", "application/octet-stream", key="download_history_db")
+
+    if is_admin():
+        with tabs[8]:
+            render_admin_user_manager_panel()
 
     st.caption("Internal use only. Review provider mapping before board or Commission reporting, as NSW PDFs often list service names rather than provider groups.")
 
