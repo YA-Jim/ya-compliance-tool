@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.3 — Clean duplicate flow"
+APP_VERSION = "v3.4 — Pivot reporting + auto mapping"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -1288,6 +1288,23 @@ def df_to_rules(df: pd.DataFrame) -> List[Tuple[str, List[str]]]:
     return list(grouped.items()) or DEFAULT_PROVIDER_RULES
 
 
+
+def normalise_provider_stem(service_name: str) -> str:
+    """Best-effort provider grouping when a service/centre is not in provider_mapping.csv."""
+    name = re.sub(r"\s+", " ", str(service_name or "")).strip(" ,-–")
+    if not name:
+        return "Unknown / Needs Mapping"
+    # Cut common location suffixes: Brand - Suburb, Brand – Suburb, Brand at School.
+    name = re.split(r"\s+[–-]\s+", name)[0].strip()
+    name = re.split(r"\s+at\s+", name, flags=re.I)[0].strip()
+    # Remove common centre descriptor endings, but keep distinctive brands.
+    name = re.sub(r"\b(Early Learning Centre|Early Learning|Childcare Centre|Child Care Centre|Long Day Care Centre|Preschool|Pre-School|Kindergarten|OSHC|OOSH)\b.*$", lambda m: m.group(0) if len(name.split()) <= 3 else "", name, flags=re.I).strip(" ,-–")
+    # If still very long, keep a stable stem rather than suburb/address noise.
+    words = name.split()
+    if len(words) > 5:
+        name = " ".join(words[:5])
+    return name[:70] if name else "Unknown / Needs Mapping"
+
 def infer_provider(text: str, rules: List[Tuple[str, List[str]]]) -> str:
     t = re.sub(r"\s+", " ", text.lower())
     for provider, aliases in rules:
@@ -1448,6 +1465,120 @@ def quarter_summary(actions: pd.DataFrame, breaches: pd.DataFrame) -> pd.DataFra
     out["Total Breach References"] = out["L165/166/167"] + out["Other"]
     return out
 
+
+
+def quarter_sort_key(label: str):
+    """Sort labels like Q1 FY25/26 — Jul–Sep 2025 in true financial-year order."""
+    txt = str(label or "")
+    m = re.search(r"Q([1-4])\s+FY(\d{2})/(\d{2})", txt)
+    if not m:
+        return (9999, 9, txt)
+    q = int(m.group(1))
+    fy_start = 2000 + int(m.group(2))
+    return (fy_start, q, txt)
+
+
+def sorted_quarter_list(df: pd.DataFrame) -> List[str]:
+    if df is None or df.empty or "quarter" not in df.columns:
+        return []
+    return sorted([str(q) for q in df["quarter"].dropna().unique().tolist()], key=quarter_sort_key)
+
+
+def add_total_col(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    numeric_cols = [c for c in out.columns if c != out.columns[0] and pd.api.types.is_numeric_dtype(out[c])]
+    if numeric_cols:
+        out["All time total"] = out[numeric_cols].sum(axis=1)
+    return out
+
+
+def make_provider_pivot(actions: pd.DataFrame, breaches: pd.DataFrame, metric: str = "Actions", quarters: List[str] = None) -> pd.DataFrame:
+    """Provider rows, quarter columns. Much easier to read than long linear QoQ tables."""
+    if actions is None or actions.empty:
+        return pd.DataFrame()
+    qs = quarters or sorted_quarter_list(actions)
+    if metric == "Actions":
+        base = actions[actions["quarter"].isin(qs)] if qs else actions.copy()
+        piv = base.pivot_table(index="provider", columns="quarter", values="action_id", aggfunc="count", fill_value=0)
+    else:
+        if breaches is None or breaches.empty:
+            return pd.DataFrame()
+        base = breaches[breaches["quarter"].isin(qs)] if qs else breaches.copy()
+        if metric == "Significant matters":
+            base = base[base["classification"].eq("Significant matter: Law 165/166/167")]
+        elif metric == "Other breaches":
+            base = base[base["classification"].eq("Other Law/Reg breach")]
+        piv = base.pivot_table(index="provider", columns="quarter", values="breach_code", aggfunc="count", fill_value=0)
+    for q in qs:
+        if q not in piv.columns:
+            piv[q] = 0
+    piv = piv[qs] if qs else piv
+    piv = piv.reset_index()
+    piv = add_total_col(piv)
+    if "All time total" in piv.columns:
+        piv = piv.sort_values("All time total", ascending=False)
+    return piv
+
+
+def make_issue_pivot(breaches: pd.DataFrame, issue_col: str = "breach_code", quarters: List[str] = None) -> pd.DataFrame:
+    if breaches is None or breaches.empty:
+        return pd.DataFrame()
+    qs = quarters or sorted_quarter_list(breaches)
+    base = breaches[breaches["quarter"].isin(qs)] if qs else breaches.copy()
+    piv = base.pivot_table(index=issue_col, columns="quarter", values="action_id", aggfunc="count", fill_value=0).reset_index()
+    for q in qs:
+        if q not in piv.columns:
+            piv[q] = 0
+    cols = [issue_col] + qs
+    piv = piv[cols]
+    piv = add_total_col(piv)
+    if "All time total" in piv.columns:
+        piv = piv.sort_values("All time total", ascending=False)
+    return piv
+
+
+def make_action_type_pivot(actions: pd.DataFrame, quarters: List[str] = None) -> pd.DataFrame:
+    if actions is None or actions.empty:
+        return pd.DataFrame()
+    qs = quarters or sorted_quarter_list(actions)
+    base = actions[actions["quarter"].isin(qs)] if qs else actions.copy()
+    piv = base.pivot_table(index="action_type", columns="quarter", values="action_id", aggfunc="count", fill_value=0).reset_index()
+    for q in qs:
+        if q not in piv.columns:
+            piv[q] = 0
+    piv = piv[["action_type"] + qs]
+    piv = add_total_col(piv)
+    if "All time total" in piv.columns:
+        piv = piv.sort_values("All time total", ascending=False)
+    return piv
+
+
+def make_auto_mapping_suggestions(actions: pd.DataFrame, rules: List[Tuple[str, List[str]]]) -> pd.DataFrame:
+    """Show provider groups that were not explicitly covered by provider_mapping.csv."""
+    if actions is None or actions.empty:
+        return pd.DataFrame(columns=["provider", "suggested_alias_contains", "actions", "sample_service"])
+    mapped_providers = {p for p, _aliases in rules}
+    df = actions.copy()
+    unknown = df[~df["provider"].isin(mapped_providers)].copy()
+    if unknown.empty:
+        return pd.DataFrame(columns=["provider", "suggested_alias_contains", "actions", "sample_service"])
+    rows = []
+    for provider, g in unknown.groupby("provider"):
+        provider_txt = str(provider).strip()
+        if not provider_txt or provider_txt.lower().startswith("unknown"):
+            sample = str(g["service_name"].dropna().iloc[0]) if not g["service_name"].dropna().empty else provider_txt
+            alias = normalise_provider_stem(sample).lower()
+        else:
+            alias = provider_txt.lower()
+        rows.append({
+            "provider": provider_txt,
+            "suggested_alias_contains": alias,
+            "actions": len(g),
+            "sample_service": str(g["service_name"].dropna().iloc[0]) if not g["service_name"].dropna().empty else "",
+        })
+    return pd.DataFrame(rows).sort_values("actions", ascending=False)
 
 def ya_position_text(summary: pd.DataFrame) -> str:
     if summary.empty or "Young Academics" not in set(summary["provider"]):
@@ -1703,6 +1834,7 @@ def main():
     logout_button()
 
     hist_actions, hist_breaches, runs = load_history()
+    all_quarters = sorted_quarter_list(hist_actions)
 
     st.markdown("<div class='ya-section-card'>", unsafe_allow_html=True)
     st.markdown("<div class='ya-panel-title'>Upload & Controls</div>", unsafe_allow_html=True)
@@ -1719,6 +1851,12 @@ def main():
             map_df = pd.read_csv(uploaded_map) if uploaded_map else rules_to_df()
             edited_map = st.data_editor(map_df, num_rows="dynamic", use_container_width=True, height=280)
             st.download_button("Download provider mapping CSV", edited_map.to_csv(index=False), "provider_mapping.csv", "text/csv")
+            suggestions = make_auto_mapping_suggestions(hist_actions, df_to_rules(edited_map))
+            if not suggestions.empty:
+                st.markdown("**Auto-discovered provider groups not in the mapping file**")
+                st.caption("These are fallback provider names found from uploaded reports. Download suggestions and add any valid rows into provider_mapping.csv.")
+                st.dataframe(suggestions, use_container_width=True, hide_index=True, key="mapping_suggestions_inline")
+                st.download_button("Download mapping suggestions", suggestions.to_csv(index=False), "provider_mapping_suggestions.csv", "text/csv", key="mapping_suggestions_inline_download")
     else:
         edited_map = rules_to_df()
 
@@ -1922,6 +2060,7 @@ def main():
     st.markdown("</div>", unsafe_allow_html=True)
 
     hist_actions, hist_breaches, runs = load_history()
+    all_quarters = sorted_quarter_list(hist_actions)
     if hist_actions.empty:
         st.info("Upload PDFs and click Process to start building historical tracking.")
         return
@@ -1986,7 +2125,7 @@ def main():
     provider_qoq = make_provider_qoq_summary(show_actions, show_breaches)
     action_type_qoq, breach_type_qoq = make_type_qoq_summary(show_actions, show_breaches)
 
-    tab_names = ["Dashboard", "Current quarter", "Rolling 4-quarter view", "Provider summary", "Quarter-on-quarter", "Law/Reg breakdown", "Raw extracted rows", "Export"]
+    tab_names = ["Dashboard", "Current quarter", "Rolling 4-quarter view", "All time", "Pivot views", "Provider summary", "Quarter-on-quarter", "Law/Reg breakdown", "Raw extracted rows", "Export"]
     if is_admin():
         tab_names.append("Admin users")
     tabs = st.tabs(tab_names)
@@ -2048,6 +2187,28 @@ def main():
         st.dataframe(action_type_summary, use_container_width=True, hide_index=True, key="rolling_action_type_summary")
 
     with tabs[3]:
+        st.caption("All uploaded history combined. This ignores the rolling quarter selection and shows the true all-time position.")
+        all_time_summary = make_provider_summary(hist_actions, hist_breaches)
+        st.markdown("### All-time provider ranking")
+        st.dataframe(all_time_summary, use_container_width=True, hide_index=True, key="all_time_provider_ranking")
+        st.markdown("### All-time action categories")
+        st.dataframe(make_action_category_summary(hist_actions), use_container_width=True, hide_index=True, key="all_time_action_categories")
+        st.markdown("### All-time breach categories")
+        st.dataframe(make_breach_category_summary(hist_breaches), use_container_width=True, hide_index=True, key="all_time_breach_categories")
+
+    with tabs[4]:
+        st.caption("Pivot view: providers/issues down the page and quarters running left-to-right in proper financial-year order.")
+        pivot_metric = st.selectbox("Pivot metric", ["Actions", "Total breaches", "Significant matters", "Other breaches"], key="pivot_metric_select")
+        st.markdown("### Provider by quarter pivot")
+        st.dataframe(make_provider_pivot(hist_actions, hist_breaches, pivot_metric, all_quarters), use_container_width=True, hide_index=True, key="provider_quarter_pivot")
+        st.markdown("### Action type by quarter pivot")
+        st.dataframe(make_action_type_pivot(hist_actions, all_quarters), use_container_width=True, hide_index=True, key="action_type_quarter_pivot")
+        st.markdown("### Law/Reg by quarter pivot")
+        st.dataframe(make_issue_pivot(hist_breaches, "breach_code", all_quarters), use_container_width=True, hide_index=True, key="law_reg_quarter_pivot")
+        st.markdown("### Category by quarter pivot")
+        st.dataframe(make_issue_pivot(hist_breaches, "classification", all_quarters), use_container_width=True, hide_index=True, key="breach_category_quarter_pivot")
+
+    with tabs[5]:
         provider_list = rolling_summary["provider"].astype(str).tolist() if not rolling_summary.empty else []
         selected_provider = st.selectbox("Choose provider", [""] + provider_list, key="provider_summary_select")
         if selected_provider:
@@ -2065,8 +2226,8 @@ def main():
             with sc2:
                 render_pie(make_breach_category_summary(pb), "Breach references by category", key=f"provider_tab_breaches_{selected_provider}")
 
-    with tabs[4]:
-        st.caption("Quarter-on-quarter stats by competitor and issue/action type.")
+    with tabs[6]:
+        st.caption("Quarter-on-quarter stats by competitor and issue/action type. Use Pivot views for the cleaner board/reporting view.")
         st.markdown("### Provider quarter-on-quarter movement")
         st.dataframe(provider_qoq, use_container_width=True, hide_index=True, key="provider_qoq_table")
         st.markdown("### Action type quarter-on-quarter by provider")
@@ -2079,23 +2240,34 @@ def main():
             chart_df = q_summary.set_index("quarter")[["Enforcement Actions", "L165/166/167", "Other"]]
             st.line_chart(chart_df)
 
-    with tabs[5]:
+    with tabs[7]:
         st.dataframe(law_summary, use_container_width=True, hide_index=True, key="law_summary_table")
         if not show_breaches.empty:
             st.markdown("### Serious matters only: Law 165/166/167")
             sig_only = show_breaches[show_breaches["classification"].eq("Significant matter: Law 165/166/167")]
             st.dataframe(make_law_summary(sig_only), use_container_width=True, hide_index=True, key="serious_law_summary_table")
 
-    with tabs[6]:
+    with tabs[8]:
         st.markdown("### Extracted enforcement actions")
         st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True, key="raw_actions_table")
         st.markdown("### Extracted breach references")
         st.dataframe(show_breaches, use_container_width=True, hide_index=True, key="raw_breaches_table")
 
-    with tabs[7]:
+    with tabs[9]:
+        all_time_summary = make_provider_summary(hist_actions, hist_breaches)
+        provider_pivot_actions = make_provider_pivot(hist_actions, hist_breaches, "Actions", all_quarters)
+        provider_pivot_breaches = make_provider_pivot(hist_actions, hist_breaches, "Total breaches", all_quarters)
+        law_reg_pivot = make_issue_pivot(hist_breaches, "breach_code", all_quarters)
+        action_type_pivot = make_action_type_pivot(hist_actions, all_quarters)
+        mapping_suggestions = make_auto_mapping_suggestions(hist_actions, provider_rules)
         sheets = {
             "Current Provider Ranking": current_summary,
             "Rolling Provider Ranking": rolling_summary,
+            "All Time Provider Ranking": all_time_summary,
+            "Provider Pivot Actions": provider_pivot_actions,
+            "Provider Pivot Breaches": provider_pivot_breaches,
+            "Action Type Pivot": action_type_pivot,
+            "Law Reg Pivot": law_reg_pivot,
             "Current Action Categories": current_action_category,
             "Current Breach Categories": current_breach_category,
             "Provider Action Categories": provider_action_category_current,
@@ -2106,6 +2278,7 @@ def main():
             "Quarter Trend": q_summary,
             "Law Reg Breakdown": law_summary,
             "Action Type Summary": action_type_summary,
+            "Mapping Suggestions": mapping_suggestions,
             "Extracted Actions": show_actions.drop(columns=["raw_text"], errors="ignore"),
             "Extracted Breaches": show_breaches,
             "Runs History": runs,
@@ -2114,9 +2287,11 @@ def main():
         xlsx = to_excel_bytes(sheets)
         st.download_button("Download Excel report", xlsx, "YA_Compliance_Benchmark_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_report")
         st.download_button("Download full history database", open(DB_PATH, "rb").read(), "compliance_history.sqlite3", "application/octet-stream", key="download_history_db")
+        if not mapping_suggestions.empty:
+            st.download_button("Download provider mapping suggestions", mapping_suggestions.to_csv(index=False), "provider_mapping_suggestions.csv", "text/csv", key="download_mapping_suggestions")
 
     if is_admin():
-        with tabs[8]:
+        with tabs[10]:
             render_admin_user_manager_panel()
 
     st.caption("Internal use only. Review provider mapping before board or Commission reporting, as NSW PDFs often list service names rather than provider groups.")
