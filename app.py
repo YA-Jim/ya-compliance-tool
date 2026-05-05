@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import hashlib
+import time
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -18,10 +19,74 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.0 — Less Streamlit UI"
+APP_VERSION = "v3.3 — Clean duplicate flow"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
+
+
+
+def show_soft_loading(message="Please wait. Updating..."):
+    """Show a blocking YA-styled loading overlay before a Streamlit rerun/action."""
+    st.markdown(f"""
+    <div class="ya-loading-overlay">
+      <div class="ya-loading-box">
+        <div class="ya-loading-spinner"></div>
+        <div class="ya-loading-title">{message}</div>
+        <div class="ya-loading-subtitle">Please do not click away while the app updates.</div>
+      </div>
+    </div>
+    <style>
+      .ya-loading-overlay {{
+        position: fixed;
+        inset: 0;
+        z-index: 999999;
+        background: rgba(47, 126, 132, 0.72);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }}
+      .ya-loading-box {{
+        width: min(440px, calc(100vw - 48px));
+        border-radius: 28px;
+        padding: 32px 34px;
+        background: rgba(255,255,255,0.88);
+        border: 1px solid rgba(255,255,255,0.70);
+        box-shadow: 0 28px 80px rgba(0,0,0,0.24);
+        text-align: center;
+        color: #004f57;
+      }}
+      .ya-loading-spinner {{
+        width: 48px;
+        height: 48px;
+        margin: 0 auto 18px;
+        border-radius: 50%;
+        border: 5px solid rgba(0,79,87,0.18);
+        border-top-color: #60d6cf;
+        animation: ya-spin 0.85s linear infinite;
+      }}
+      .ya-loading-title {{
+        font-size: 22px;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        margin-bottom: 8px;
+      }}
+      .ya-loading-subtitle {{
+        font-size: 13px;
+        color: rgba(0,79,87,0.72);
+        font-weight: 700;
+      }}
+      @keyframes ya-spin {{ to {{ transform: rotate(360deg); }} }}
+    
+.ya-success-panel{background:rgba(255,255,255,.92);border:1px solid rgba(255,255,255,.72);box-shadow:0 22px 60px rgba(0,0,0,.18);border-radius:26px;padding:24px 28px;margin:18px 0 24px;color:#004f57}
+.ya-success-title{font-size:24px;font-weight:950;margin-bottom:16px}
+.ya-success-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.ya-success-grid div{background:#eaf6f8;border-radius:18px;padding:16px;font-weight:800;color:#004f57}
+.ya-duplicate-panel{background:rgba(255,248,216,.96);border:2px solid #f1c232;box-shadow:0 18px 48px rgba(0,0,0,.14);border-radius:24px;padding:20px 24px;margin:18px 0;color:#3d3300}.ya-duplicate-panel h3{margin:0 0 8px;font-size:22px}.ya-duplicate-list{margin:10px 0 0 0;padding-left:18px;font-weight:800}
+</style>
+    """, unsafe_allow_html=True)
+    time.sleep(0.35)
 
 DEFAULT_PROVIDER_RULES = [
     ("Young Academics", ["young academics"]),
@@ -1178,13 +1243,13 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
             if st.session_state.get(f"review_action_{rk}") == "Remove":
                 new_removed.add(fname)
         st.session_state["upload_removed_files"] = sorted(new_removed)
-        with st.spinner("Please wait. Updating upload review..."):
-            st.rerun()
+        show_soft_loading("Please wait. Updating upload review...")
+        st.rerun()
 
     if reset_removed_clicked:
         st.session_state["upload_removed_files"] = []
-        with st.spinner("Please wait. Restoring files..."):
-            st.rerun()
+        show_soft_loading("Please wait. Restoring files...")
+        st.rerun()
 
     if st.session_state.get("upload_removed_files"):
         st.markdown(f"<div class='ya-removed-note'>{len(st.session_state['upload_removed_files'])} file(s) removed from this upload consideration. Use Reset removed files to bring them back.</div>", unsafe_allow_html=True)
@@ -1666,15 +1731,32 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
+        upload_nonce = st.session_state.setdefault("upload_widget_nonce", 0)
         bulk_files = st.file_uploader(
             "Drop all NSW enforcement PDFs here",
             type=["pdf"],
             accept_multiple_files=True,
-            key="bulk_pdf_upload",
+            key=f"bulk_pdf_upload_{upload_nonce}",
             help="Accepts Service Enforcement, Provider Cancellations, Service Cancellations, and Involuntary Suspensions PDFs. Missing reports are allowed.",
         )
+        if bulk_files:
+            st.session_state.pop("last_upload_success", None)
     else:
         bulk_files = []
+
+    if st.session_state.get("last_upload_success") and not bulk_files:
+        su = st.session_state.get("last_upload_success", {})
+        st.markdown(f"""
+        <div class='ya-success-panel'>
+          <div class='ya-success-title'>✅ Upload complete</div>
+          <div class='ya-success-grid'>
+            <div><strong>Quarter(s)</strong><br>{su.get('quarters','—')}</div>
+            <div><strong>Files processed</strong><br>{su.get('files',0)}</div>
+            <div><strong>Actions saved</strong><br>{su.get('actions',0)}</div>
+            <div><strong>Breach references</strong><br>{su.get('breaches',0)}</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     review_df = pd.DataFrame()
     file_text_cache = {}
@@ -1687,19 +1769,41 @@ def main():
         review_df = active_review_df.copy()
 
         ready_count = int((active_review_df["Status"] == "Ready").sum()) if not active_review_df.empty else 0
-        existing_count = int(active_review_df["Status"].astype(str).str.startswith("Already uploaded").sum()) if not active_review_df.empty else 0
+        duplicate_df = active_review_df[active_review_df["Existing rows"].fillna(0).astype(int) > 0] if not active_review_df.empty else pd.DataFrame()
+        existing_count = len(duplicate_df)
         blocked_count = len(active_review_df) - ready_count - existing_count
         rc1, rc2, rc3 = st.columns(3)
         rc1.metric("Ready to save", ready_count)
-        rc2.metric("Already uploaded", existing_count)
+        rc2.metric("Already exists", existing_count)
         rc3.metric("Needs check", blocked_count)
 
-        process_mode = st.radio(
-            "How should duplicates be handled?",
-            ["Process new files only", "Replace existing quarter/report type", "Stop if anything already exists"],
-            horizontal=True,
-            key="bulk_duplicate_mode",
-        )
+        if existing_count:
+            duplicate_items = "".join([f"<li>{r['Detected quarter']} — {r['Detected report type']} ({int(r['Existing rows'])} existing rows)</li>" for _, r in duplicate_df.iterrows()])
+            st.markdown(f"""
+            <div class='ya-duplicate-panel'>
+              <h3>Existing data found</h3>
+              <p>This quarter/report type has already been uploaded. To protect the history, upload is blocked until an admin confirms replacement.</p>
+              <ul class='ya-duplicate-list'>{duplicate_items}</ul>
+            </div>
+            """, unsafe_allow_html=True)
+            d1, d2, d3 = st.columns([1.2, 1.0, 3])
+            with d1:
+                if st.button("Replace existing data", key="confirm_replace_duplicates", type="primary"):
+                    st.session_state["replace_duplicates_confirmed"] = True
+                    st.success("Replacement confirmed. Click Process uploaded PDFs to continue.")
+            with d2:
+                if st.button("Cancel upload", key="cancel_duplicate_upload"):
+                    st.session_state["replace_duplicates_confirmed"] = False
+                    st.session_state["upload_removed_files"] = []
+                    st.session_state["upload_widget_nonce"] = st.session_state.get("upload_widget_nonce", 0) + 1
+                    st.rerun()
+            with d3:
+                if st.session_state.get("replace_duplicates_confirmed"):
+                    st.info("Replacement mode active for this upload only.")
+        else:
+            st.session_state["replace_duplicates_confirmed"] = False
+
+        process_mode = "Replace existing quarter/report type" if st.session_state.get("replace_duplicates_confirmed") else "Process new files only"
     else:
         process_mode = "Process new files only"
 
@@ -1721,6 +1825,7 @@ def main():
                     run_id_to_delete = runs.iloc[idx]["run_id"]
                     confirm_delete = st.text_input("Type DELETE to confirm", key="confirm_run_delete")
                     if st.button("Delete selected run", key="delete_selected_run_btn", disabled=(confirm_delete != "DELETE")):
+                        show_soft_loading("Please wait. Deleting saved run...")
                         delete_run(run_id_to_delete)
                         st.success("Deleted. Refreshing…")
                         st.rerun()
@@ -1747,9 +1852,10 @@ def main():
             if not bad.empty:
                 st.error("Some uploaded files could not be safely identified or are duplicated in this batch. Remove/fix those files first.")
                 st.dataframe(bad, use_container_width=True, hide_index=True, key="bulk_bad_files_table")
-            elif process_mode == "Stop if anything already exists" and (review_df["Existing rows"] > 0).any():
-                st.error("At least one quarter/report type already exists. Choose 'Process new files only' or 'Replace existing quarter/report type'.")
+            elif (review_df["Existing rows"].fillna(0).astype(int) > 0).any() and not st.session_state.get("replace_duplicates_confirmed"):
+                st.error("Existing data found. Confirm 'Replace existing data' first or cancel the upload.")
             else:
+                show_soft_loading("Please wait. Processing uploaded files...")
                 run_id = datetime.now().strftime("%Y%m%d%H%M%S")
                 all_actions, all_breaches, report_meta = [], [], []
                 processed_files = 0
@@ -1799,6 +1905,15 @@ def main():
                     st.session_state["latest_actions"] = actions
                     st.session_state["latest_breaches"] = breaches
                     quarters_saved = ", ".join(sorted(actions["quarter"].unique().tolist()))
+                    st.session_state["last_upload_success"] = {
+                        "quarters": quarters_saved,
+                        "files": processed_files,
+                        "actions": len(actions),
+                        "breaches": len(breaches),
+                    }
+                    st.session_state["replace_duplicates_confirmed"] = False
+                    st.session_state["upload_removed_files"] = []
+                    st.session_state["upload_widget_nonce"] = st.session_state.get("upload_widget_nonce", 0) + 1
                     st.success(f"Processed {processed_files} file(s), saved {len(actions)} actions and {len(breaches)} breach references across: {quarters_saved}.")
                     if skipped_files:
                         st.info("Skipped: " + "; ".join(skipped_files[:10]))
