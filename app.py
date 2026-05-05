@@ -18,7 +18,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v2.9 — Less Streamlit UI"
+APP_VERSION = "v3.0 — Less Streamlit UI"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -391,7 +391,7 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 /* Hide Streamlit menu/footer */
 #MainMenu, footer{visibility:hidden;}
 
-/* v2.9 less-Streamlit polish */
+/* v3.0 less-Streamlit polish */
 #MainMenu, footer, header [data-testid="stToolbar"], [data-testid="stDeployButton"]{visibility:hidden!important; height:0!important;}
 [data-testid="stStatusWidget"]{display:none!important;}
 .ya-review-table-stable{padding:14px 16px!important; background:rgba(255,255,255,.98)!important;}
@@ -419,6 +419,87 @@ button[kind="secondaryFormSubmit"]{background:#ffffff!important;color:#00504f!im
 [data-baseweb="popover"] [role="option"], [data-baseweb="menu"] li{background:#ffffff!important;color:#10242a!important;}
 [data-baseweb="popover"] [role="option"]:hover, [data-baseweb="menu"] li:hover{background:#eaf6f8!important;color:#00504f!important;}
 
+
+
+/* v3.0 upload review readability override */
+.ya-review-table-stable{
+  background:#ffffff!important;
+  border-radius:18px!important;
+  padding:18px!important;
+  box-shadow:0 14px 34px rgba(0,0,0,.18)!important;
+  border:1px solid #b8dce1!important;
+}
+.ya-review-table-stable .ya-review-header{
+  background:#eef7f8!important;
+  color:#004f55!important;
+  font-size:13px!important;
+  padding:12px 14px!important;
+  border-radius:12px!important;
+  letter-spacing:.03em!important;
+}
+.ya-review-table-stable .ya-review-row{
+  background:#ffffff!important;
+  padding:12px 0!important;
+  border-bottom:1px solid #d6e7eb!important;
+}
+.ya-review-table-stable .ya-review-file{
+  color:#0f2430!important;
+  font-size:14px!important;
+  font-weight:800!important;
+  line-height:1.25!important;
+  word-break:break-word!important;
+}
+.ya-file-icon{
+  background:#e5f5f7!important;
+  color:#005f66!important;
+  border:1px solid #add8dd!important;
+  min-width:44px!important;
+  height:36px!important;
+}
+.ya-review-table-stable [data-baseweb="select"]{
+  background:#ffffff!important;
+  border:1.5px solid #bfd7dd!important;
+  border-radius:12px!important;
+  min-height:44px!important;
+}
+.ya-review-table-stable [data-baseweb="select"] *{
+  color:#10242a!important;
+  font-size:14px!important;
+  font-weight:650!important;
+}
+.ya-review-existing{
+  color:#10242a!important;
+  font-size:14px!important;
+  font-weight:800!important;
+}
+.ya-review-status-text{
+  font-size:13px!important;
+  font-weight:850!important;
+  line-height:1.2!important;
+  word-break:normal!important;
+}
+.ya-review-status-text.ready{color:#00834d!important;}
+.ya-review-status-text.check{color:#b36b00!important;}
+.ya-review-status-text.duplicate{color:#b42318!important;}
+.ya-review-table-stable [data-testid="column"]{padding:0 .38rem!important;}
+/* keep dropdown menus readable */
+[data-baseweb="popover"] [role="listbox"], [data-baseweb="menu"]{
+  background:#ffffff!important;
+  color:#10242a!important;
+  border:1px solid #b8dce1!important;
+  border-radius:14px!important;
+  box-shadow:0 18px 40px rgba(0,0,0,.24)!important;
+  max-height:420px!important;
+}
+[data-baseweb="popover"] [role="option"], [data-baseweb="menu"] li{
+  color:#10242a!important;
+  background:#ffffff!important;
+  font-size:14px!important;
+}
+[data-baseweb="popover"] [role="option"]:hover, [data-baseweb="menu"] li:hover{
+  background:#eaf6f8!important;
+  color:#00504f!important;
+}
 </style>
 """
 st.markdown(YA_CSS, unsafe_allow_html=True)
@@ -1019,7 +1100,7 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
     <div class='ya-review-shell ya-less-streamlit'>
       <div class='ya-review-intro'>
         <div class='ya-review-eyebrow'>Upload review</div>
-        <div class='ya-review-copy'>Confirm the quarter and report type before processing. This editor applies changes in one action so the page does not flicker or drop into the teal overlay while you work.</div>
+        <div class='ya-review-copy'>Confirm the quarter and report type before processing. Make corrections here before saving. Use standard quarter labels and report types. Select Remove for files you do not want processed.</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1027,7 +1108,7 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
     # Form = select/dropdown changes do not cause immediate reruns. Much closer to a real web-app workflow.
     with st.form("upload_review_stable_form", clear_on_submit=False):
         st.markdown("<div class='ya-review-table ya-review-table-stable'>", unsafe_allow_html=True)
-        h1,h2,h3,h4,h5,h6 = st.columns([3.65, 1.95, 2.15, .72, 1.7, .95], vertical_alignment="center")
+        h1,h2,h3,h4,h5,h6 = st.columns([4.4, 2.55, 2.75, .9, 2.45, 1.35], vertical_alignment="center")
         with h1: st.markdown("<div class='ya-review-header'>File</div>", unsafe_allow_html=True)
         with h2: st.markdown("<div class='ya-review-header'>Quarter</div>", unsafe_allow_html=True)
         with h3: st.markdown("<div class='ya-review-header'>Report type</div>", unsafe_allow_html=True)
@@ -1041,10 +1122,10 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
             status = str(row.get("Status", ""))
             existing = int(row.get("Existing rows", 0) or 0)
             status_class = "ready" if status.lower() == "ready" else ("duplicate" if existing or "Duplicate" in status else "check")
-            file_display = fname if len(fname) <= 72 else fname[:42] + "…" + fname[-24:]
+            file_display = fname if len(fname) <= 92 else fname[:58] + "…" + fname[-28:]
 
             st.markdown(f"<div class='ya-review-row {'last' if i == len(active_df)-1 else ''}'>", unsafe_allow_html=True)
-            c1,c2,c3,c4,c5,c6 = st.columns([3.65, 1.95, 2.15, .72, 1.7, .95], vertical_alignment="center")
+            c1,c2,c3,c4,c5,c6 = st.columns([4.4, 2.55, 2.75, .9, 2.45, 1.35], vertical_alignment="center")
             with c1:
                 st.markdown(f"<div class='ya-review-file' title='{fname}'><span class='ya-file-icon'>PDF</span>{file_display}</div>", unsafe_allow_html=True)
             with c2:
@@ -1073,7 +1154,7 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
             with c6:
                 st.selectbox(
                     "Action",
-                    ["Keep", "🗑 Remove"],
+                    ["Keep", "Remove"],
                     index=0,
                     key=f"review_action_{rk}",
                     label_visibility="collapsed",
@@ -1087,16 +1168,15 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
         with f2:
             reset_removed_clicked = st.form_submit_button("Reset removed files")
         with f3:
-            st.markdown("<div class='ya-form-hint'>Select 🗑 Remove beside a file, then click Apply. Dropdowns will not refresh the page until you apply changes.</div>", unsafe_allow_html=True)
+            st.markdown("<div class='ya-form-hint'>Select Remove beside a file, then click Apply. Dropdowns will not refresh the page until you apply changes.</div>", unsafe_allow_html=True)
 
     if apply_clicked:
         new_removed = set(st.session_state.get("upload_removed_files", []))
         for _, r in review_df.iterrows():
             fname = str(r["File"])
             rk = _file_row_key(fname)
-            if st.session_state.get(f"review_action_{rk}") == "🗑 Remove":
+            if st.session_state.get(f"review_action_{rk}") == "Remove":
                 new_removed.add(fname)
-                st.session_state[f"review_action_{rk}"] = "Keep"
         st.session_state["upload_removed_files"] = sorted(new_removed)
         with st.spinner("Please wait. Updating upload review..."):
             st.rerun()
