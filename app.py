@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.9 — Restored + table extraction fix"
+APP_VERSION = "v3.9.1 — entity ID mapping safe"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -937,10 +937,20 @@ def load_reports_history() -> pd.DataFrame:
 
 
 SERVICE_MASTER_REQUIRED = {
-    "ServiceApprovalNumber": ["serviceapprovalnumber", "service approval number", "service_approval_number", "service id"],
-    "Provider Approval Number": ["provider approval number", "providerapprovalnumber", "provider_approval_number", "provider id"],
-    "ServiceName": ["servicename", "service name"],
-    "ProviderLegalName": ["providerlegalname", "provider legal name", "provider name"],
+    # Service approval / entity ID aliases. These are normalised, so entity id, entity_ID,
+    # EntityID, ServiceApprovalNumber, Service ID etc. all resolve to the same field.
+    "ServiceApprovalNumber": [
+        "serviceapprovalnumber", "service approval number", "service_approval_number",
+        "service id", "service_id", "serviceid", "entity id", "entity_id",
+        "entityid", "entity_ID", "Entity ID", "Entity_ID", "approval number",
+    ],
+    "Provider Approval Number": [
+        "provider approval number", "providerapprovalnumber", "provider_approval_number",
+        "provider id", "provider_id", "providerid", "provider entity id",
+        "provider entity_id", "providerentityid",
+    ],
+    "ServiceName": ["servicename", "service name", "service_name", "service"],
+    "ProviderLegalName": ["providerlegalname", "provider legal name", "provider name", "provider_name", "approved provider", "approvedprovider"],
 }
 
 
@@ -955,6 +965,31 @@ def _find_col(df: pd.DataFrame, aliases: List[str]) -> str:
         if key in lookup:
             return lookup[key]
     return ""
+
+
+def normalise_entity_id(value: str) -> str:
+    """Normalise NSW entity IDs so PDF and CSV joins work.
+
+    Handles values such as:
+    - SE-00007735
+    - se00007735
+    - SE 00007735
+    - PR-40001112
+    - blank / nan
+    """
+    txt = str(value or "").strip().upper()
+    if txt in {"", "NAN", "NONE", "NULL"}:
+        return ""
+    # Remove non-alphanumeric, then rebuild SE-/PR- format.
+    compact = re.sub(r"[^A-Z0-9]", "", txt)
+    m = re.search(r"\b(SE|PR)(\d{8})\b", compact)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    # If text contains a correctly hyphenated ID somewhere, preserve it.
+    m = re.search(r"\b(SE|PR)-?(\d{8})\b", txt)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    return txt
 
 
 def tidy_title(value: str) -> str:
@@ -1050,8 +1085,8 @@ def normalise_service_master_csv(file_obj) -> pd.DataFrame:
     if missing:
         raise ValueError("Missing required columns: " + ", ".join(missing))
     out = pd.DataFrame()
-    out["service_approval_number"] = raw[cols["ServiceApprovalNumber"]].astype(str).str.strip()
-    out["provider_approval_number"] = raw[cols["Provider Approval Number"]].astype(str).str.strip()
+    out["service_approval_number"] = raw[cols["ServiceApprovalNumber"]].apply(normalise_entity_id)
+    out["provider_approval_number"] = raw[cols["Provider Approval Number"]].apply(normalise_entity_id)
     out["service_name"] = raw[cols["ServiceName"]].astype(str).str.strip()
     out["provider_legal_name"] = raw[cols["ProviderLegalName"]].astype(str).str.strip()
     optional_map = {
@@ -1116,7 +1151,7 @@ def enrich_with_service_master(actions: pd.DataFrame, breaches: pd.DataFrame, ma
     pr_map = sm.drop_duplicates("provider_approval_number").set_index("provider_approval_number").to_dict("index") if "provider_approval_number" in sm.columns else {}
 
     def enrich_row(row):
-        ent = str(row.get("entity_id", "")).strip()
+        ent = normalise_entity_id(row.get("entity_id", ""))
         rec = svc_map.get(ent) or pr_map.get(ent)
         out = row.copy()
         if rec:
@@ -1751,7 +1786,7 @@ def extract_pdf_table_records(uploaded_file, quarter: str, report_type: str, pro
                             continue
 
                         seq += 1
-                        entity_id = ID_RE.search(entity_id).group(1)
+                        entity_id = normalise_entity_id(ID_RE.search(entity_id).group(1))
                         row_text = " ".join(x for x in [entity_id, service_name, address, nature, reason, date_issued, details] if x)
                         provider_seed = service_name or reason or row_text
                         provider = infer_provider(provider_seed, provider_rules)
@@ -1820,7 +1855,7 @@ def parse_pdf(uploaded_file, quarter: str, report_type: str, provider_rules, run
         date_match = DATE_RE.search(block)
         if not id_match:
             continue
-        entity_id = id_match.group(1)
+        entity_id = normalise_entity_id(id_match.group(1))
         date_issued = date_match.group(1) if date_match else ""
 
         # Fallback only: attempt to infer a sane display name. If it looks like action text,
