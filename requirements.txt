@@ -1,4 +1,5 @@
-streamlit
+altair
 pandas
 pdfplumber
+streamlit
 xlsxwriter
