@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.9.1 — entity ID mapping safe"
+APP_VERSION = "v4.0 — Lookup validation + PDF service refresh"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -114,8 +114,35 @@ DEFAULT_PROVIDER_RULES = [
 
 LAW_RE = re.compile(r"\b(?:Law\s*)?(165|166|167|161A|162A|\d{2,3}[A-Z]?)\s*(?:\([^\)]*\))?", re.I)
 REG_RE = re.compile(r"\bRegulation\s*(\d{2,3}[A-Z]*(?:AAC|AA|A|B|C|D)?)\s*(?:\([^\)]*\))?", re.I)
-ID_RE = re.compile(r"\b((?:SE|PR)-\d{8})\b")
+ID_RE = re.compile(r"\b((?:SE|PR)[- ]?\d{8})\b", re.I)
 DATE_RE = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")
+
+
+def normalise_entity_id(value: str) -> str:
+    """Normalise NSW service/provider IDs across PDF text and ACECQA uploads.
+
+    Handles: entity id, entity_ID, ServiceApprovalNumber, Service ID, SE00007735,
+    SE-00007735, 00007735, lower-case, spaces, and Excel numeric-looking values.
+    """
+    if value is None:
+        return ""
+    txt = str(value).strip().upper()
+    if not txt or txt in {"NAN", "NONE", "NULL"}:
+        return ""
+    txt = txt.replace("\u00a0", " ")
+    txt = re.sub(r"\s+", "", txt)
+    m = re.search(r"\b(PR|SE)[- ]?(\d{1,8})\b", txt, flags=re.I)
+    if m:
+        return f"{m.group(1).upper()}-{m.group(2).zfill(8)}"
+    digits = re.sub(r"\D", "", txt)
+    if digits:
+        # Default bare 8 digit IDs to service IDs because mapping gaps are service rows.
+        return f"SE-{digits[-8:].zfill(8)}"
+    return txt
+
+
+def is_valid_entity_id(value: str) -> bool:
+    return bool(re.match(r"^(SE|PR)-\d{8}$", str(value or "")))
 
 st.set_page_config(page_title=APP_TITLE, page_icon="🔒", layout="wide")
 
@@ -937,20 +964,16 @@ def load_reports_history() -> pd.DataFrame:
 
 
 SERVICE_MASTER_REQUIRED = {
-    # Service approval / entity ID aliases. These are normalised, so entity id, entity_ID,
-    # EntityID, ServiceApprovalNumber, Service ID etc. all resolve to the same field.
     "ServiceApprovalNumber": [
         "serviceapprovalnumber", "service approval number", "service_approval_number",
-        "service id", "service_id", "serviceid", "entity id", "entity_id",
-        "entityid", "entity_ID", "Entity ID", "Entity_ID", "approval number",
+        "service id", "service_id", "entity id", "entity_id", "entityid", "entity number"
     ],
     "Provider Approval Number": [
         "provider approval number", "providerapprovalnumber", "provider_approval_number",
-        "provider id", "provider_id", "providerid", "provider entity id",
-        "provider entity_id", "providerentityid",
+        "provider id", "provider_id", "providerid"
     ],
-    "ServiceName": ["servicename", "service name", "service_name", "service"],
-    "ProviderLegalName": ["providerlegalname", "provider legal name", "provider name", "provider_name", "approved provider", "approvedprovider"],
+    "ServiceName": ["servicename", "service name", "service_name", "name of service"],
+    "ProviderLegalName": ["providerlegalname", "provider legal name", "provider name", "provider_name", "legal provider name"],
 }
 
 
@@ -965,31 +988,6 @@ def _find_col(df: pd.DataFrame, aliases: List[str]) -> str:
         if key in lookup:
             return lookup[key]
     return ""
-
-
-def normalise_entity_id(value: str) -> str:
-    """Normalise NSW entity IDs so PDF and CSV joins work.
-
-    Handles values such as:
-    - SE-00007735
-    - se00007735
-    - SE 00007735
-    - PR-40001112
-    - blank / nan
-    """
-    txt = str(value or "").strip().upper()
-    if txt in {"", "NAN", "NONE", "NULL"}:
-        return ""
-    # Remove non-alphanumeric, then rebuild SE-/PR- format.
-    compact = re.sub(r"[^A-Z0-9]", "", txt)
-    m = re.search(r"\b(SE|PR)(\d{8})\b", compact)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-    # If text contains a correctly hyphenated ID somewhere, preserve it.
-    m = re.search(r"\b(SE|PR)-?(\d{8})\b", txt)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-    return txt
 
 
 def tidy_title(value: str) -> str:
@@ -1109,7 +1107,7 @@ def normalise_service_master_csv(file_obj) -> pd.DataFrame:
         parents.append(parent); brands.append(brand)
     out["parent_company"] = parents
     out["sub_brand"] = brands
-    out = out[out["service_approval_number"].str.match(r"^SE-\d{8}$", na=False)].copy()
+    out = out[out["service_approval_number"].apply(is_valid_entity_id)].copy()
     out = out.drop_duplicates(subset=["service_approval_number"], keep="last")
     return out
 
@@ -1147,6 +1145,10 @@ def enrich_with_service_master(actions: pd.DataFrame, breaches: pd.DataFrame, ma
     if master_df is None or master_df.empty or a.empty:
         return a, b
     sm = master_df.copy()
+    if "service_approval_number" in sm.columns:
+        sm["service_approval_number"] = sm["service_approval_number"].apply(normalise_entity_id)
+    if "provider_approval_number" in sm.columns:
+        sm["provider_approval_number"] = sm["provider_approval_number"].apply(normalise_entity_id)
     svc_map = sm.drop_duplicates("service_approval_number").set_index("service_approval_number").to_dict("index") if "service_approval_number" in sm.columns else {}
     pr_map = sm.drop_duplicates("provider_approval_number").set_index("provider_approval_number").to_dict("index") if "provider_approval_number" in sm.columns else {}
 
@@ -1165,12 +1167,14 @@ def enrich_with_service_master(actions: pd.DataFrame, breaches: pd.DataFrame, ma
             if not str(out.get("service_name", "")).strip() or looks_like_action_text(str(out.get("service_name", ""))):
                 out["service_name"] = rec.get("service_name", out.get("service_name", ""))
         else:
-            parent, brand = infer_parent_subbrand(row.get("service_name", ""), row.get("provider", ""), "")
+            service_name_for_fallback = row.get("service_name", "")
+            provider_for_fallback = "" if looks_like_action_text(str(row.get("provider", ""))) else row.get("provider", "")
+            parent, brand = infer_parent_subbrand(service_name_for_fallback, provider_for_fallback, "")
             out["provider_legal_name"] = out.get("provider_legal_name", "") or ""
             out["parent_company"] = out.get("parent_company", "") or parent
             out["sub_brand"] = out.get("sub_brand", "") or brand
-            if looks_like_action_text(str(out.get("provider", ""))):
-                out["provider"] = parent
+            if looks_like_action_text(str(out.get("provider", ""))) or str(out.get("provider", "")).strip() in ["", "Unknown / Needs Mapping"]:
+                out["provider"] = parent if parent and parent != "Unknown / Needs Mapping" else "Unknown / Needs Mapping"
         return out
 
     if not a.empty:
@@ -1845,7 +1849,12 @@ def parse_pdf(uploaded_file, quarter: str, report_type: str, provider_rules, run
     if table_actions is not None and not table_actions.empty:
         return table_actions, table_breaches
 
-    # Fallback for PDFs where pdfplumber cannot read the table grid.
+    # Second fallback: use word coordinates to recover service name left of the Service ID column.
+    word_actions, word_breaches = extract_pdf_wordline_records(uploaded_file, quarter, report_type, provider_rules, run_id)
+    if word_actions is not None and not word_actions.empty:
+        return word_actions, word_breaches
+
+    # Final fallback for PDFs where pdfplumber cannot read the table grid.
     text = pre_read_text if pre_read_text is not None else read_pdf_text(uploaded_file)
     blocks = split_blocks(text)
     processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
