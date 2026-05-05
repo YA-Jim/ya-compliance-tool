@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.7 — Service provider source file"
+APP_VERSION = "v3.8 — Compliance position table"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -270,6 +270,16 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 .stTabs [data-baseweb="tab"] p{color:var(--ya-teal-dark)!important; font-weight:900!important;}
 .stTabs [aria-selected="true"]{background:var(--ya-navy)!important; border-color:var(--ya-navy)!important;}
 .stTabs [aria-selected="true"] p{color:#ffffff!important;}
+
+/* v3.8 clearer active navigation / expander states */
+.stTabs [data-baseweb="tab"]{background:#eaf7f8!important;color:#00504f!important;box-shadow:0 2px 8px rgba(0,0,0,.08)!important;}
+.stTabs [data-baseweb="tab"] p{color:#00504f!important;}
+.stTabs [data-baseweb="tab"][aria-selected="true"]{background:#08245c!important;border:2px solid #8edfe4!important;box-shadow:0 6px 18px rgba(8,36,92,.32)!important;}
+.stTabs [data-baseweb="tab"][aria-selected="true"] p{color:#ffffff!important;}
+details[data-testid="stExpander"] summary{background:rgba(255,255,255,.14)!important;color:#ffffff!important;border-radius:14px!important;}
+details[data-testid="stExpander"] summary *{color:#ffffff!important;font-weight:900!important;}
+details[data-testid="stExpander"][open] summary{background:#08245c!important;color:#ffffff!important;}
+
 
 /* Tables */
 [data-testid="stDataFrame"]{background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 10px 22px rgba(0,0,0,.14);}
@@ -1554,7 +1564,8 @@ def looks_like_action_text(raw: str) -> bool:
         return True
     bad_bits = [
         "compliance notice", "compliance due", "due to non-compliance", "due to non compliance",
-        "national law", "national regulations", "emergency action", "emergency an education",
+        "compliance due to", "compliance due", "compliance notice due", "non-compliance with the national",
+        "national law", "national regulations", "emergency action", "emergency an education", "emergency an education and care",
         "enforceable undertaking", "enforceable due", "section 177", "section 179", "section 179a",
         "provider approval cancelled", "service approval", "service suspended", "grounds for",
         "regulatory authority", "offence to", "offence relating", "continued provision",
@@ -1935,10 +1946,24 @@ def make_breach_category_summary(breaches: pd.DataFrame, quarter: str = None) ->
     return add_percent(out)
 
 
+def _clean_provider_table_source(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove parser leakage from provider-level reporting tables.
+
+    These rows are still counted in global totals, but not shown as named competitors.
+    They appear in the mapping gaps panel instead.
+    """
+    if df is None or df.empty or "provider" not in df.columns:
+        return pd.DataFrame() if df is None else df
+    out = df.copy()
+    out["provider"] = out["provider"].astype(str).str.strip()
+    bad = out["provider"].apply(lambda x: looks_like_action_text(x) or x in ["", "Unknown", "Unknown / Needs Mapping"])
+    return out[~bad].copy()
+
+
 def make_provider_action_category_summary(actions: pd.DataFrame, quarter: str = None) -> pd.DataFrame:
     if actions.empty:
         return pd.DataFrame(columns=["provider", "Category", "Count", "% of Category", "% of Provider Actions"])
-    df = actions.copy()
+    df = _clean_provider_table_source(actions)
     if quarter:
         df = df[df["quarter"].eq(quarter)]
     if df.empty:
@@ -1954,7 +1979,7 @@ def make_provider_action_category_summary(actions: pd.DataFrame, quarter: str = 
 def make_provider_breach_category_summary(breaches: pd.DataFrame, quarter: str = None) -> pd.DataFrame:
     if breaches.empty:
         return pd.DataFrame(columns=["provider", "Category", "Count", "% of Category", "% of Provider Breaches"])
-    df = breaches.copy()
+    df = _clean_provider_table_source(breaches)
     if quarter:
         df = df[df["quarter"].eq(quarter)]
     if df.empty:
@@ -1965,6 +1990,39 @@ def make_provider_breach_category_summary(breaches: pd.DataFrame, quarter: str =
     out["% of Category"] = (out["Count"] / cat_total * 100).round(1)
     out["% of Provider Breaches"] = (out["Count"] / prov_total * 100).round(1)
     return out.sort_values(["Category", "Count"], ascending=[True, False])
+
+
+def make_compliance_position_table(breaches: pd.DataFrame, provider_col: str = "provider") -> pd.DataFrame:
+    """Board-style table: Provider | Law 165/166/167 | Other | Total."""
+    cols = ["Provider", "Law 165/166/167", "Other", "Total"]
+    if breaches is None or breaches.empty or provider_col not in breaches.columns:
+        return pd.DataFrame(columns=cols)
+    df = _clean_provider_table_source(breaches.rename(columns={provider_col: "provider"}))
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    piv = df.pivot_table(index="provider", columns="classification", values="breach_code", aggfunc="count", fill_value=0)
+    sig_col = "Significant matter: Law 165/166/167"
+    other_col = "Other Law/Reg breach"
+    for c in [sig_col, other_col]:
+        if c not in piv.columns:
+            piv[c] = 0
+    out = piv[[sig_col, other_col]].reset_index().rename(columns={"provider":"Provider", sig_col:"Law 165/166/167", other_col:"Other"})
+    out["Total"] = out["Law 165/166/167"] + out["Other"]
+    return out.sort_values(["Total", "Law 165/166/167"], ascending=False).reset_index(drop=True)
+
+
+def make_mapping_gaps(actions: pd.DataFrame) -> pd.DataFrame:
+    if actions is None or actions.empty:
+        return pd.DataFrame(columns=["entity_id", "service_name", "raw_provider", "quarter", "Count"])
+    df = actions.copy()
+    raw_provider = df.get("provider", pd.Series([""]*len(df))).astype(str)
+    bad = raw_provider.apply(lambda x: looks_like_action_text(x) or x in ["", "Unknown", "Unknown / Needs Mapping"])
+    gaps = df[bad].copy()
+    if gaps.empty:
+        return pd.DataFrame(columns=["entity_id", "service_name", "raw_provider", "quarter", "Count"])
+    gaps["raw_provider"] = raw_provider[bad].values
+    cols = [c for c in ["entity_id", "service_name", "raw_provider", "quarter"] if c in gaps.columns]
+    return gaps.groupby(cols, dropna=False).size().reset_index(name="Count").sort_values("Count", ascending=False)
 
 
 def make_provider_qoq_summary(actions: pd.DataFrame, breaches: pd.DataFrame) -> pd.DataFrame:
@@ -2579,15 +2637,25 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
             render_pie(action_category, "Actions by category", key="pie_actions_selected_v36")
         with pie_col2:
             render_pie(breach_category, "Breach references by category", key="pie_breaches_selected_v36")
+        st.markdown("### Compliance position by provider")
+        st.caption("Board-style breach split for the selected quarter(s): Law 165/166/167 vs all other Law/Reg references.")
+        compliance_position = make_compliance_position_table(show_breaches)
+        st.dataframe(compliance_position, use_container_width=True, hide_index=True, key="compliance_position_table_v38")
         st.markdown("### Category tables")
-        st.dataframe(action_category, use_container_width=True, hide_index=True, key="action_category_selected_v35")
-        st.dataframe(breach_category, use_container_width=True, hide_index=True, key="breach_category_selected_v35")
+        st.dataframe(action_category, use_container_width=True, hide_index=True, key="action_category_selected_v38")
+        st.dataframe(breach_category, use_container_width=True, hide_index=True, key="breach_category_selected_v38")
         st.markdown("### Competitor breakdown by category")
         st.caption("Provider/category tables are stacked vertically for readability.")
         st.markdown("#### Actions by provider/category")
         st.dataframe(provider_action_category, use_container_width=True, hide_index=True, key="provider_action_category_v35")
         st.markdown("#### Breaches by provider/category")
-        st.dataframe(provider_breach_category, use_container_width=True, hide_index=True, key="provider_breach_category_v35")
+        st.dataframe(provider_breach_category, use_container_width=True, hide_index=True, key="provider_breach_category_v38")
+        gaps = make_mapping_gaps(show_actions)
+        if not gaps.empty:
+            with st.expander("Mapping gaps / unmatched service IDs", expanded=False):
+                st.caption("These rows could not be linked to the uploaded service/provider source file. They are excluded from provider competitor tables until mapped.")
+                st.dataframe(gaps, use_container_width=True, hide_index=True, key="mapping_gaps_v38")
+                st.download_button("Download mapping gaps CSV", gaps.to_csv(index=False), "mapping_gaps.csv", "text/csv", key="download_mapping_gaps_v38")
 
     with tabs[1]:
         st.caption("Selected quarters combined. Click one provider row to open a detailed provider summary.")
