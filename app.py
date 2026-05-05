@@ -24,6 +24,7 @@ import io
 import os
 import re
 import sqlite3
+import hashlib
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -36,7 +37,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v1.6 — Internal Build"
+APP_VERSION = "v1.7 — Internal Build"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -106,7 +107,7 @@ html, body, [data-testid="stAppViewContainer"]{
 .ya-header{display:flex; align-items:center; justify-content:space-between; gap:18px;}
 .ya-brand{display:flex; align-items:center; gap:22px;}
 .ya-logo{width:200px; max-width:34vw; background:#fff; padding:6px; border-radius:14px;}
-.ya-title h1{font-size:31px; line-height:1.06; color:var(--ya-teal)!important; margin:0; font-weight:900; letter-spacing:-.02em;}
+.ya-title h1{font-size:31px; line-height:1.06; color:#357b84!important; margin:0; font-weight:900; letter-spacing:-.02em; text-shadow:none!important;}
 .ya-title p{margin:4px 0 0 0; color:var(--ya-teal-dark)!important; font-size:15px;}
 .ya-version{background:var(--ya-navy); color:#fff; border-radius:999px; padding:9px 14px; font-weight:900; font-size:12px; white-space:nowrap; box-shadow:0 6px 14px rgba(8,36,92,.18);}
 .ya-note{margin-top:16px; padding:14px 16px; border-left:5px solid var(--ya-teal); background:var(--ya-soft); border-radius:14px; color:var(--ya-teal-dark)!important; font-weight:650;}
@@ -128,12 +129,20 @@ html, body, [data-testid="stAppViewContainer"]{
 
 /* Headings and body text */
 h1,h2,h3,h4,.stMarkdown h1,.stMarkdown h2,.stMarkdown h3{color:#ffffff!important; font-weight:900!important;}
+.ya-shell h1,.ya-shell .ya-title h1{color:#357b84!important;}
+.ya-shell p,.ya-shell strong{color:#00504f!important;}
 p,li,.stMarkdown,.stCaption,[data-testid="stCaptionContainer"]{color:#eefbfc!important;}
 label,[data-testid="stWidgetLabel"],[data-testid="stWidgetLabel"] p{color:#ffffff!important; font-weight:800!important;}
 
 /* Inputs */
-input, textarea, select{border-radius:12px!important;}
-[data-baseweb="input"]{border-radius:12px!important;}
+input, textarea, select{border-radius:12px!important; color:#10242a!important; background:#ffffff!important;}
+[data-baseweb="input"], [data-baseweb="select"], [data-baseweb="textarea"]{border-radius:12px!important; background:#ffffff!important; color:#10242a!important;}
+[data-baseweb="select"] *{color:#10242a!important;}
+[data-baseweb="popover"] *{color:#10242a!important;}
+[data-baseweb="tag"]{background:#357b84!important; color:#fff!important; border-radius:8px!important;}
+[data-baseweb="tag"] span{color:#fff!important;}
+.stSelectbox div, .stMultiSelect div, .stTextInput div{color:#10242a!important;}
+
 
 /* File uploaders */
 [data-testid="stFileUploader"] section{
@@ -213,6 +222,15 @@ input, textarea, select{border-radius:12px!important;}
 
 /* Tables */
 [data-testid="stDataFrame"]{background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 10px 22px rgba(0,0,0,.14);}
+[data-testid="stDataFrame"] *{color:#10242a!important;}
+
+/* Notes cards */
+.ya-note-grid{display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:14px; margin:12px 0 18px;}
+.ya-note-card{background:#ffffff; border-radius:18px; padding:16px; min-height:145px; box-shadow:0 10px 22px rgba(0,0,0,.16); border:1px solid #b8dce1;}
+.ya-note-card h4{margin:0 0 8px 0; color:#00504f!important; font-size:14px;}
+.ya-note-card p{margin:0; color:#10242a!important; font-size:13px; line-height:1.35;}
+@media(max-width:900px){.ya-note-grid{grid-template-columns:1fr 1fr}.ya-header{align-items:flex-start}.ya-brand{align-items:flex-start}.ya-logo{width:150px}.ya-title h1{font-size:24px}}
+
 
 /* Hide Streamlit menu/footer */
 #MainMenu, footer{visibility:hidden;}
@@ -284,6 +302,13 @@ def init_db():
             actions_count INTEGER, breaches_count INTEGER, notes TEXT
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            run_id TEXT, quarter TEXT, report_type TEXT, file_name TEXT,
+            file_signature TEXT, actions_count INTEGER, breaches_count INTEGER,
+            processed_at TEXT, PRIMARY KEY (quarter, report_type)
+        )
+    """)
     # Backward-compatible column adds.
     for table in ["actions", "breaches"]:
         try:
@@ -293,7 +318,7 @@ def init_db():
     con.commit(); con.close()
 
 
-def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame):
+def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame, report_meta: pd.DataFrame = None):
     con = sqlite3.connect(DB_PATH)
     processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not actions.empty:
@@ -310,6 +335,11 @@ def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame):
         run_id = str(actions["run_id"].iloc[0])
         quarter = str(actions["quarter"].iloc[0])
         con.execute("INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?,?)", (run_id, quarter, processed_at, len(actions), len(breaches), ""))
+    if report_meta is not None and not report_meta.empty:
+        report_meta = report_meta.copy()
+        if "processed_at" not in report_meta.columns:
+            report_meta["processed_at"] = processed_at
+        report_meta.to_sql("reports", con, if_exists="append", index=False)
     con.commit(); con.close()
 
 
@@ -327,8 +357,19 @@ def delete_run(run_id: str):
     con = sqlite3.connect(DB_PATH)
     con.execute("DELETE FROM actions WHERE run_id=?", (run_id,))
     con.execute("DELETE FROM breaches WHERE run_id=?", (run_id,))
+    con.execute("DELETE FROM reports WHERE run_id=?", (run_id,))
     con.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
     con.commit(); con.close()
+
+
+def load_reports_history() -> pd.DataFrame:
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql_query("SELECT * FROM reports ORDER BY processed_at DESC", con)
+    finally:
+        con.close()
+    return df
 
 
 def read_pdf_text(uploaded_file) -> str:
@@ -341,6 +382,61 @@ def read_pdf_text(uploaded_file) -> str:
         for page in pdf.pages:
             pages.append(page.extract_text(x_tolerance=2, y_tolerance=4) or "")
     return "\n".join(pages)
+
+
+MONTH_ABBR = {
+    "january": "Jan", "february": "Feb", "march": "Mar", "april": "Apr", "may": "May", "june": "Jun",
+    "july": "Jul", "august": "Aug", "september": "Sep", "october": "Oct", "november": "Nov", "december": "Dec",
+}
+
+def normalise_quarter_label(text: str, fallback: str = "") -> str:
+    """Return a strict label like Q2 FY25/26 — Oct–Dec 2025 from NSW PDF header text."""
+    source = text or fallback or ""
+    q = re.search(r"\bQ([1-4])\s*FY\s*(20)?(\d{2})\s*/\s*(20)?(\d{2})\b", source, re.I)
+    m = re.search(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+to\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})", source, re.I)
+    if q and m:
+        qnum = q.group(1)
+        fy1 = q.group(3)
+        fy2 = q.group(5)
+        start = MONTH_ABBR[m.group(1).lower()]
+        end = MONTH_ABBR[m.group(2).lower()]
+        year = m.group(3)
+        return f"Q{qnum} FY{fy1}/{fy2} — {start}–{end} {year}"
+    # If the user typed something already that matches the standard, preserve it.
+    clean = (fallback or "").strip()
+    if re.match(r"^Q[1-4]\s+FY\d{2}/\d{2}\s+—\s+[A-Z][a-z]{2}–[A-Z][a-z]{2}\s+20\d{2}$", clean):
+        return clean
+    return clean or "UNIDENTIFIED QUARTER — CHECK PDF"
+
+
+def file_signature(uploaded_file) -> str:
+    data = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    return hashlib.sha256(data).hexdigest()
+
+
+def report_already_uploaded(quarter: str, report_type: str) -> int:
+    con = sqlite3.connect(DB_PATH)
+    try:
+        count = con.execute("SELECT COUNT(*) FROM actions WHERE quarter=? AND report_type=?", (quarter, report_type)).fetchone()[0]
+    finally:
+        con.close()
+    return int(count or 0)
+
+
+def render_kpi_notes():
+    st.markdown("""
+    <div class='ya-note-grid'>
+      <div class='ya-note-card'><h4>Actions</h4><p>Counts each published enforcement action row extracted from the uploaded NSW PDFs. This is not the same as breach references; one action can contain multiple Law/Reg items.</p></div>
+      <div class='ya-note-card'><h4>Breach references</h4><p>Counts every Law or Regulation reference extracted from the reason field. This is the better measure for issue volume and complexity.</p></div>
+      <div class='ya-note-card'><h4>L165/166/167</h4><p>Isolates the serious matters bucket: supervision, inappropriate discipline, and protection from harm/hazards.</p></div>
+      <div class='ya-note-card'><h4>YA actions</h4><p>Counts Young Academics enforcement actions in the selected quarter range. This supports direct provider ranking.</p></div>
+      <div class='ya-note-card'><h4>YA significant</h4><p>Counts Young Academics breach references that fall into Law 165, 166 or 167. This is the board-level risk indicator.</p></div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def rules_to_df(rules=DEFAULT_PROVIDER_RULES) -> pd.DataFrame:
@@ -425,10 +521,10 @@ def split_blocks(text: str) -> List[str]:
     return blocks
 
 
-def parse_pdf(uploaded_file, quarter: str, report_type: str, provider_rules) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    text = read_pdf_text(uploaded_file)
+def parse_pdf(uploaded_file, quarter: str, report_type: str, provider_rules, run_id: str = None, pre_read_text: str = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    text = pre_read_text if pre_read_text is not None else read_pdf_text(uploaded_file)
     blocks = split_blocks(text)
-    run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+    run_id = run_id or datetime.now().strftime("%Y%m%d%H%M%S")
     processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     action_rows, breach_rows = [], []
     for idx, block in enumerate(blocks, start=1):
@@ -592,11 +688,7 @@ def main():
 
     provider_rules = df_to_rules(edited_map)
 
-    colq1, colq2 = st.columns([1, 1])
-    with colq1:
-        quarter = st.text_input("Quarter label", value="Q2 FY25/26 — Oct–Dec 2025")
-    with colq2:
-        st.markdown("<span class='ya-pill'>Manual upload</span><span class='ya-pill'>Saved history</span><span class='ya-pill'>Excel export</span>", unsafe_allow_html=True)
+    st.markdown("<span class='ya-pill'>Manual upload</span><span class='ya-pill'>Saved history</span><span class='ya-pill'>Duplicate checks</span><span class='ya-pill'>Standard quarter labels</span><span class='ya-pill'>Excel export</span>", unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -606,12 +698,43 @@ def main():
         service_cancel = st.file_uploader("Service Cancellations PDF", type=["pdf"], key="scancel")
         suspension = st.file_uploader("Involuntary Suspensions PDF", type=["pdf"], key="susp")
 
+    uploaded_for_quarter = [f for f in [service_enforcement, provider_cancel, service_cancel, suspension] if f is not None]
+    detected_quarters = []
+    file_text_cache = {}
+    for f in uploaded_for_quarter:
+        try:
+            txt = read_pdf_text(f)
+            file_text_cache[f.name] = txt
+            detected_quarters.append(normalise_quarter_label(txt))
+        except Exception:
+            pass
+    detected_quarters = [q for q in detected_quarters if q and not q.startswith("UNIDENTIFIED")]
+    inferred_quarter = detected_quarters[0] if detected_quarters else ""
+    quarter_mismatch = len(set(detected_quarters)) > 1
+
+    qcol1, qcol2 = st.columns([1.2, 1])
+    with qcol1:
+        quarter = st.text_input("Quarter label — automatically read from uploaded PDF header", value=inferred_quarter, disabled=True if inferred_quarter else False, placeholder="Upload a NSW PDF to auto-detect quarter")
+    with qcol2:
+        if inferred_quarter:
+            st.success(f"Detected: {inferred_quarter}")
+        elif uploaded_for_quarter:
+            st.warning("Could not detect the quarter from the uploaded PDFs. Check the files are the NSW quarterly reports.")
+        else:
+            st.caption("Upload at least one quarterly PDF and the app will enforce the standard quarter label.")
+        if quarter_mismatch:
+            st.error("Quarter mismatch: uploaded PDFs appear to be from different quarters. Remove the incorrect file before processing.")
+
     action_col, history_col = st.columns([1, 1])
     with action_col:
         process_clicked = st.button("Process uploaded reports")
     with history_col:
         with st.expander("History manager", expanded=False):
+            reports_history = load_reports_history()
             st.caption(f"Saved runs: {len(runs)}")
+            if not reports_history.empty:
+                st.markdown("**Saved reports by quarter/type**")
+                st.dataframe(reports_history[["quarter", "report_type", "file_name", "actions_count", "breaches_count", "processed_at"]], use_container_width=True, hide_index=True)
             if not runs.empty:
                 run_labels = [f"{r['quarter']} — {r['processed_at']} — {r['actions_count']} actions" for _, r in runs.iterrows()]
                 selected_delete = st.selectbox("Delete a saved run", [""] + run_labels)
@@ -632,24 +755,52 @@ def main():
             (service_cancel, "Service Approval Cancellation"),
             (suspension, "Involuntary Suspension"),
         ]
-        all_actions, all_breaches = [], []
-        with st.spinner("Reading PDFs, extracting actions, classifying breaches, and saving history…"):
-            for file, rtype in uploads:
-                if file is None:
-                    continue
-                a, b = parse_pdf(file, quarter, rtype, provider_rules)
-                all_actions.append(a)
-                all_breaches.append(b)
-        actions = pd.concat(all_actions, ignore_index=True) if all_actions else pd.DataFrame()
-        breaches = pd.concat(all_breaches, ignore_index=True) if all_breaches else pd.DataFrame()
-        if actions.empty:
-            st.error("No rows were extracted. Check that you uploaded the correct NSW PDFs.")
+        uploads = [(f, r) for f, r in uploads if f is not None]
+        if not uploads:
+            st.error("Upload at least one PDF before processing.")
+        elif not quarter:
+            st.error("Quarter could not be detected. Use the official NSW quarterly PDFs and try again.")
+        elif quarter_mismatch:
+            st.error("Cannot process because the uploaded PDFs appear to be from different quarters.")
         else:
-            save_to_db(actions, breaches)
-            st.session_state["latest_actions"] = actions
-            st.session_state["latest_breaches"] = breaches
-            st.success(f"Processed and saved: {len(actions)} actions and {len(breaches)} breach references.")
-            st.rerun()
+            duplicates = []
+            for file, rtype in uploads:
+                existing = report_already_uploaded(quarter, rtype)
+                if existing:
+                    duplicates.append(f"{rtype} — {existing} existing rows")
+            if duplicates:
+                st.error("This data has already been uploaded for the selected quarter. Check History manager / Saved reports before uploading again: " + "; ".join(duplicates))
+            else:
+                run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+                all_actions, all_breaches, report_meta = [], [], []
+                with st.spinner("Reading PDFs, extracting actions, classifying breaches, checking duplicates, and saving history…"):
+                    for file, rtype in uploads:
+                        txt = file_text_cache.get(file.name) or read_pdf_text(file)
+                        a, b = parse_pdf(file, quarter, rtype, provider_rules, run_id=run_id, pre_read_text=txt)
+                        sig = file_signature(file)
+                        all_actions.append(a)
+                        all_breaches.append(b)
+                        report_meta.append({
+                            "run_id": run_id,
+                            "quarter": quarter,
+                            "report_type": rtype,
+                            "file_name": file.name,
+                            "file_signature": sig,
+                            "actions_count": len(a),
+                            "breaches_count": len(b),
+                            "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        })
+                actions = pd.concat(all_actions, ignore_index=True) if all_actions else pd.DataFrame()
+                breaches = pd.concat(all_breaches, ignore_index=True) if all_breaches else pd.DataFrame()
+                meta_df = pd.DataFrame(report_meta)
+                if actions.empty:
+                    st.error("No rows were extracted. Check that you uploaded the correct NSW PDFs.")
+                else:
+                    save_to_db(actions, breaches, meta_df)
+                    st.session_state["latest_actions"] = actions
+                    st.session_state["latest_breaches"] = breaches
+                    st.success(f"Processed and saved: {len(actions)} actions and {len(breaches)} breach references for {quarter}.")
+                    st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -684,6 +835,9 @@ def main():
     ya_sig = int(((show_breaches["provider"] == "Young Academics") & (show_breaches["classification"] == "Significant matter: Law 165/166/167")).sum()) if not show_breaches.empty else 0
     k5.metric("YA significant", f"{ya_sig:,}")
 
+    with st.expander("What do these executive position numbers mean?", expanded=False):
+        render_kpi_notes()
+
     st.markdown(f"<div class='ya-warning'><strong>{ya_position_text(rolling_summary)}</strong></div>", unsafe_allow_html=True)
 
     tabs = st.tabs(["Current quarter", "Rolling 4-quarter view", "Trend", "Law/Reg breakdown", "Raw extracted rows", "Export"])
@@ -715,6 +869,7 @@ def main():
             "Extracted Actions": show_actions.drop(columns=["raw_text"], errors="ignore"),
             "Extracted Breaches": show_breaches,
             "Runs History": runs,
+            "Uploaded Reports": load_reports_history(),
         }
         xlsx = to_excel_bytes(sheets)
         st.download_button("Download Excel report", xlsx, "YA_Compliance_Benchmark_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
