@@ -1,32 +1,32 @@
-provider,alias_contains
-Young Academics,young academics
-Affinity,milestones
-Affinity,papilio
-Affinity,kids academy
-Affinity,bambino
-Affinity,kindy patch
-Affinity,world of learning
-Affinity,great beginnings
-Affinity,community kids
-OSHClub & Helping Hands,oshclub
-OSHClub & Helping Hands,helping hands
-Little Zak's Academy,little zak
-Little Zak's Academy,little zaks
-Jenny's Kindergarten,jenny's kindergarten
-Jenny's Kindergarten,jennys kindergarten
-Oz Education,oz education
-Only About Children,only about children
-TheirCare,theircare
-Guardian Childcare/Education,guardian
-Goodstart Early Learning,goodstart
-Camp Australia,camp australia
-Busy Bees,busy bees
-Mini Masterminds,mini masterminds
-TeamKids,teamkids
-SCECS OSHC,scecs
-Aspire OSHC,aspire oshc
-Story House Early Learning,story house
-MindChamps,mindchamps
-Montessori Academy,montessori academy
-Reggio Emilia Early Learning,reggio emilia
-Learn & Laugh,learn & laugh
+pattern	provider
+Young Academics	Young Academics
+OSHClub	OSHClub & Helping Hands
+Helping Hands	OSHClub & Helping Hands
+Affinity	Affinity
+Milestones	Affinity
+Papilio	Affinity
+Kids Academy	Affinity
+Kindy Patch	Affinity
+World of Learning	Affinity
+Great Beginnings	Affinity
+Bambino	Affinity
+Little Zak	Little Zak's Academy
+Little Zaks	Little Zak's Academy
+Jenny	Jenny's Kindergarten
+Goodstart	Goodstart Early Learning
+Only About Children	Only About Children
+TheirCare	TheirCare
+Mini Masterminds	Mini Masterminds
+Camp Australia	Camp Australia
+Guardian	Guardian Childcare/Education
+Busy Bees	Busy Bees
+TeamKids	TeamKids
+Montessori Academy	Montessori Academy
+MindChamps	MindChamps
+Oz Education	Oz Education
+SCECS	SCECS OSHC
+Aspire OSHC	Aspire OSHC
+Story House	Story House Early Learning
+Ambrose	Ambrose School Age Care
+The Grove Academy	The Grove Academy
+Kids Club	Kids Club
