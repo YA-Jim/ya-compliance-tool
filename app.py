@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.6 — Clean reports + law glossary"
+APP_VERSION = "v3.7 — Service provider source file"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -90,7 +90,7 @@ def show_soft_loading(message="Please wait. Updating..."):
 
 DEFAULT_PROVIDER_RULES = [
     ("Young Academics", ["young academics"]),
-    ("Affinity", ["milestones", "papilio", "kids academy", "bambino", "kindy patch", "world of learning", "great beginnings", "community kids", "aussie kindies", "narellan world of learning", "denham court world of learning"]),
+    ("Affinity", ["affinity education", "milestones", "papilio", "kids academy", "aussie kindies", "little beginnings"]),
     ("OSHClub & Helping Hands", ["oshclub", "helping hands", "os hclub"]),
     ("Little Zak's Academy", ["little zak", "little zaks"]),
     ("Jenny's Kindergarten", ["jenny's kindergarten", "jennys kindergarten"]),
@@ -800,6 +800,29 @@ def init_db(create_defaults: bool = False):
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS service_master (
+            service_approval_number TEXT PRIMARY KEY,
+            provider_approval_number TEXT,
+            service_name TEXT,
+            provider_legal_name TEXT,
+            parent_company TEXT,
+            sub_brand TEXT,
+            service_type TEXT,
+            address TEXT,
+            suburb TEXT,
+            state TEXT,
+            postcode TEXT,
+            latitude REAL,
+            longitude REAL,
+            approved_places INTEGER,
+            ldc TEXT,
+            source_file TEXT,
+            uploaded_by TEXT,
+            uploaded_at TEXT
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             email TEXT PRIMARY KEY,
             password_hash TEXT NOT NULL,
@@ -827,6 +850,12 @@ def init_db(create_defaults: bool = False):
             cur.execute(f"ALTER TABLE {table} ADD COLUMN processed_at TEXT")
         except sqlite3.OperationalError:
             pass
+    for col in ["provider_legal_name", "parent_company", "sub_brand", "provider_approval_number", "service_approval_number"]:
+        for table in ["actions", "breaches"]:
+            try:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
     for table in ["actions", "reports", "runs"]:
         try:
             cur.execute(f"ALTER TABLE {table} ADD COLUMN uploaded_by TEXT")
@@ -895,6 +924,218 @@ def load_reports_history() -> pd.DataFrame:
     finally:
         con.close()
     return df
+
+
+SERVICE_MASTER_REQUIRED = {
+    "ServiceApprovalNumber": ["serviceapprovalnumber", "service approval number", "service_approval_number", "service id"],
+    "Provider Approval Number": ["provider approval number", "providerapprovalnumber", "provider_approval_number", "provider id"],
+    "ServiceName": ["servicename", "service name"],
+    "ProviderLegalName": ["providerlegalname", "provider legal name", "provider name"],
+}
+
+
+def _col_lookup(df: pd.DataFrame) -> Dict[str, str]:
+    return {re.sub(r"[^a-z0-9]", "", str(c).lower()): c for c in df.columns}
+
+
+def _find_col(df: pd.DataFrame, aliases: List[str]) -> str:
+    lookup = _col_lookup(df)
+    for a in aliases:
+        key = re.sub(r"[^a-z0-9]", "", a.lower())
+        if key in lookup:
+            return lookup[key]
+    return ""
+
+
+def tidy_title(value: str) -> str:
+    txt = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not txt:
+        return ""
+    if txt.isupper() or txt.islower():
+        txt = txt.title()
+    txt = txt.replace("Pty Ltd", "Pty Ltd").replace("Pty. Ltd.", "Pty Ltd").replace("Oshc", "OSHC").replace("Oosh", "OOSH")
+    return txt
+
+
+def infer_parent_subbrand(service_name: str, provider_legal_name: str, provider_approval_number: str = "") -> Tuple[str, str]:
+    svc = re.sub(r"\s+", " ", str(service_name or "")).strip()
+    legal = re.sub(r"\s+", " ", str(provider_legal_name or "")).strip()
+    low_svc = svc.lower()
+    low_legal = legal.lower()
+    pr = str(provider_approval_number or "").strip()
+
+    # Parent owner first. Do not group Little Zak's under Affinity.
+    if "young academics" in low_svc or "young academics" in low_legal:
+        parent = "Young Academics"
+    elif "g8 education" in low_legal or pr == "PR-00000898":
+        parent = "G8 Education"
+    elif "affinity education" in low_legal or pr == "PR-40001112":
+        parent = "Affinity"
+    elif "goodstart" in low_svc or "goodstart" in low_legal:
+        parent = "Goodstart Early Learning"
+    elif "guardian" in low_svc or "guardian" in low_legal:
+        parent = "Guardian Childcare/Education"
+    elif "little zak" in low_svc or "little zaks" in low_svc or "m & w zaki" in low_legal or re.search(r"\blz\b", low_legal):
+        parent = "Little Zak's Academy"
+    elif "oshclub" in low_svc or "helping hands" in low_svc:
+        parent = "OSHClub & Helping Hands"
+    elif "theircare" in low_svc or "theircare" in low_legal:
+        parent = "TheirCare"
+    elif "camp australia" in low_svc or "camp australia" in low_legal:
+        parent = "Camp Australia"
+    elif "busy bees" in low_svc or "busy bees" in low_legal:
+        parent = "Busy Bees"
+    elif "only about children" in low_svc or "only about children" in low_legal:
+        parent = "Only About Children"
+    elif "mini masterminds" in low_svc or "mini masterminds" in low_legal:
+        parent = "Mini Masterminds"
+    elif "teamkids" in low_svc or "teamkids" in low_legal:
+        parent = "TeamKids"
+    elif "oz education" in low_svc or "oz education" in low_legal:
+        parent = "Oz Education"
+    else:
+        parent = tidy_title(legal) or normalise_provider_stem(svc)
+
+    brand_patterns = [
+        ("Little Zak", "Little Zak's Academy"),
+        ("Milestones", "Milestones Early Learning"),
+        ("Papilio", "Papilio Early Learning"),
+        ("Kids Academy", "Kids Academy"),
+        ("Aussie Kindies", "Aussie Kindies"),
+        ("Little Beginnings", "Little Beginnings"),
+        ("Community Kids", "Community Kids"),
+        ("World of Learning", "World of Learning"),
+        ("Great Beginnings", "Great Beginnings"),
+        ("Greenwood", "Greenwood"),
+        ("Bambino", "Bambino's Kindergarten"),
+        ("Creative Garden", "Creative Garden"),
+        ("Kinder Haven", "Kinder Haven"),
+        ("Kindy Patch", "Kindy Patch"),
+        ("NurtureOne", "NurtureOne"),
+        ("Penguin", "Penguin Childcare"),
+        ("Pelicans", "Pelicans Childcare"),
+        ("Learning Sanctuary", "The Learning Sanctuary"),
+        ("Guardian", "Guardian"),
+        ("Goodstart", "Goodstart Early Learning"),
+        ("OSHClub", "OSHClub"),
+        ("Helping Hands", "Helping Hands"),
+        ("TheirCare", "TheirCare"),
+        ("Camp Australia", "Camp Australia"),
+        ("Young Academics", "Young Academics"),
+    ]
+    sub_brand = ""
+    for pat, label in brand_patterns:
+        if pat.lower() in low_svc:
+            sub_brand = label
+            break
+    if not sub_brand:
+        sub_brand = parent
+    return parent, sub_brand
+
+
+def normalise_service_master_csv(file_obj) -> pd.DataFrame:
+    raw = pd.read_csv(file_obj)
+    cols = {target: _find_col(raw, aliases) for target, aliases in SERVICE_MASTER_REQUIRED.items()}
+    missing = [k for k, v in cols.items() if not v]
+    if missing:
+        raise ValueError("Missing required columns: " + ", ".join(missing))
+    out = pd.DataFrame()
+    out["service_approval_number"] = raw[cols["ServiceApprovalNumber"]].astype(str).str.strip()
+    out["provider_approval_number"] = raw[cols["Provider Approval Number"]].astype(str).str.strip()
+    out["service_name"] = raw[cols["ServiceName"]].astype(str).str.strip()
+    out["provider_legal_name"] = raw[cols["ProviderLegalName"]].astype(str).str.strip()
+    optional_map = {
+        "service_type": ["servicetype", "service type"],
+        "address": ["address", "serviceaddress", "service address"],
+        "suburb": ["suburb"],
+        "state": ["state"],
+        "postcode": ["postcode", "post code"],
+        "latitude": ["latitude", "lat"],
+        "longitude": ["longitude", "lon", "lng"],
+        "approved_places": ["numberofapprovedplaces", "number of approved places", "approved places"],
+        "ldc": ["ldc"],
+    }
+    for new_col, aliases in optional_map.items():
+        c = _find_col(raw, aliases)
+        out[new_col] = raw[c] if c else ""
+    parents, brands = [], []
+    for _, r in out.iterrows():
+        parent, brand = infer_parent_subbrand(r.get("service_name", ""), r.get("provider_legal_name", ""), r.get("provider_approval_number", ""))
+        parents.append(parent); brands.append(brand)
+    out["parent_company"] = parents
+    out["sub_brand"] = brands
+    out = out[out["service_approval_number"].str.match(r"^SE-\d{8}$", na=False)].copy()
+    out = out.drop_duplicates(subset=["service_approval_number"], keep="last")
+    return out
+
+
+def save_service_master(master_df: pd.DataFrame, source_file: str = ""):
+    init_db()
+    df = master_df.copy()
+    df["source_file"] = source_file
+    df["uploaded_by"] = current_user_email()
+    df["uploaded_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    con = sqlite3.connect(DB_PATH)
+    con.execute("DELETE FROM service_master")
+    df.to_sql("service_master", con, if_exists="append", index=False)
+    con.commit(); con.close()
+    log_audit("upload_service_master", f"Uploaded service master: {source_file}; rows={len(df)}")
+
+
+def load_service_master() -> pd.DataFrame:
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql_query("SELECT * FROM service_master", con)
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        con.close()
+    return df
+
+
+def enrich_with_service_master(actions: pd.DataFrame, breaches: pd.DataFrame, master_df: pd.DataFrame = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    a = actions.copy() if actions is not None else pd.DataFrame()
+    b = breaches.copy() if breaches is not None else pd.DataFrame()
+    if master_df is None:
+        master_df = load_service_master()
+    if master_df is None or master_df.empty or a.empty:
+        return a, b
+    sm = master_df.copy()
+    svc_map = sm.drop_duplicates("service_approval_number").set_index("service_approval_number").to_dict("index") if "service_approval_number" in sm.columns else {}
+    pr_map = sm.drop_duplicates("provider_approval_number").set_index("provider_approval_number").to_dict("index") if "provider_approval_number" in sm.columns else {}
+
+    def enrich_row(row):
+        ent = str(row.get("entity_id", "")).strip()
+        rec = svc_map.get(ent) or pr_map.get(ent)
+        out = row.copy()
+        if rec:
+            out["service_approval_number"] = rec.get("service_approval_number", "")
+            out["provider_approval_number"] = rec.get("provider_approval_number", "")
+            out["provider_legal_name"] = rec.get("provider_legal_name", "")
+            out["parent_company"] = rec.get("parent_company", "")
+            out["sub_brand"] = rec.get("sub_brand", "")
+            # Main provider column becomes the business roll-up, not raw PDF text.
+            out["provider"] = rec.get("parent_company", "") or rec.get("provider_legal_name", "") or out.get("provider", "")
+            if not str(out.get("service_name", "")).strip() or looks_like_action_text(str(out.get("service_name", ""))):
+                out["service_name"] = rec.get("service_name", out.get("service_name", ""))
+        else:
+            parent, brand = infer_parent_subbrand(row.get("service_name", ""), row.get("provider", ""), "")
+            out["provider_legal_name"] = out.get("provider_legal_name", "") or ""
+            out["parent_company"] = out.get("parent_company", "") or parent
+            out["sub_brand"] = out.get("sub_brand", "") or brand
+            if looks_like_action_text(str(out.get("provider", ""))):
+                out["provider"] = parent
+        return out
+
+    if not a.empty:
+        a = pd.DataFrame([enrich_row(r) for _, r in a.iterrows()])
+    if not b.empty and not a.empty and "action_id" in a.columns:
+        cols = [c for c in ["provider", "provider_legal_name", "parent_company", "sub_brand", "provider_approval_number", "service_approval_number"] if c in a.columns]
+        mp = a.drop_duplicates("action_id").set_index("action_id")[cols].to_dict("index")
+        for c in cols:
+            b[c] = b.apply(lambda r, c=c: mp.get(r.get("action_id"), {}).get(c, r.get(c, "")), axis=1)
+    return a, b
 
 
 def read_pdf_text(uploaded_file) -> str:
@@ -1870,8 +2111,29 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    with st.expander("Provider mapping controls", expanded=False):
-        st.caption("Provider mapping groups service names into provider/brand groups. The app also suggests unmapped provider groups from uploaded data.")
+    with st.expander("Quarterly service/provider source file", expanded=False):
+        st.caption("Upload the current NSW service/provider CSV each quarter/month. This becomes the source of truth for Service Approval Number → legal provider → parent business → sub-brand.")
+        current_master = load_service_master()
+        if not current_master.empty:
+            src = current_master.get("source_file", pd.Series([""])).dropna().astype(str).iloc[0] if "source_file" in current_master.columns and not current_master.empty else ""
+            uploaded_at = current_master.get("uploaded_at", pd.Series([""])).dropna().astype(str).iloc[0] if "uploaded_at" in current_master.columns and not current_master.empty else ""
+            st.success(f"Current source file loaded: {len(current_master):,} services" + (f" — {src}" if src else "") + (f" — {uploaded_at}" if uploaded_at else ""))
+            st.dataframe(current_master[[c for c in ["service_approval_number","provider_approval_number","service_name","provider_legal_name","parent_company","sub_brand","suburb","postcode"] if c in current_master.columns]].head(50), use_container_width=True, hide_index=True, key="service_master_preview_v37")
+        service_master_upload = st.file_uploader("Upload service/provider source CSV", type=["csv"], key="service_master_upload_v37")
+        if service_master_upload is not None:
+            try:
+                parsed_master = normalise_service_master_csv(service_master_upload)
+                st.info(f"Detected {len(parsed_master):,} services. Preview below. This will replace the current source file when saved.")
+                st.dataframe(parsed_master[[c for c in ["service_approval_number","provider_approval_number","service_name","provider_legal_name","parent_company","sub_brand"] if c in parsed_master.columns]].head(100), use_container_width=True, hide_index=True, key="service_master_new_preview_v37")
+                if st.button("Save service/provider source file", key="save_service_master_v37", type="primary"):
+                    save_service_master(parsed_master, service_master_upload.name)
+                    st.success("Service/provider source file saved. Reports will now use Service Approval Number matching where possible.")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Could not read that CSV: {e}")
+
+    with st.expander("Fallback provider mapping controls", expanded=False):
+        st.caption("Fallback mapping is only used when a service is not found in the quarterly service/provider source file.")
         uploaded_map = st.file_uploader("Upload provider_mapping.csv", type=["csv"], key="map_v35")
         map_df = pd.read_csv(uploaded_map) if uploaded_map else rules_to_df()
         edited_map = st.data_editor(map_df, num_rows="dynamic", use_container_width=True, height=280, key="provider_mapping_editor_v35")
@@ -2042,6 +2304,7 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                         processed_files += 1
                 actions = pd.concat(all_actions, ignore_index=True) if all_actions else pd.DataFrame()
                 breaches = pd.concat(all_breaches, ignore_index=True) if all_breaches else pd.DataFrame()
+                actions, breaches = enrich_with_service_master(actions, breaches)
                 meta_df = pd.DataFrame(report_meta)
                 if actions.empty:
                     st.warning("No new rows were saved. " + (" Skipped: " + "; ".join(skipped_files[:8]) if skipped_files else ""))
@@ -2193,6 +2456,7 @@ def clean_loaded_frames(actions: pd.DataFrame, breaches: pd.DataFrame) -> Tuple[
     """Clean already-saved history at report time so old dirty uploads do not poison pivots."""
     a = actions.copy() if actions is not None else pd.DataFrame()
     b = breaches.copy() if breaches is not None else pd.DataFrame()
+    a, b = enrich_with_service_master(a, b)
     def fix_provider(row):
         provider = str(row.get("provider", ""))
         if provider and not looks_like_action_text(provider) and provider != "Unknown / Needs Mapping":
@@ -2421,6 +2685,7 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
             "Extracted Breaches": show_breaches,
             "Runs History": runs,
             "Uploaded Reports": load_reports_history(),
+            "Service Provider Source": load_service_master(),
         }
         xlsx = to_excel_bytes(sheets)
         st.download_button("Download Excel report", xlsx, "YA_Compliance_Benchmark_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_report_v35")
