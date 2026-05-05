@@ -33,6 +33,8 @@ from typing import Dict, List, Tuple
 import pandas as pd
 import streamlit as st
 import altair as alt
+import plotly.express as px
+import plotly.graph_objects as go
 
 try:
     import pdfplumber
@@ -40,7 +42,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v1.8 — Internal Build"
+APP_VERSION = "v1.9 — Internal Build"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -249,6 +251,26 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 .ya-provider-title{background:#ffffff; border-radius:24px; padding:24px; box-shadow:0 12px 28px rgba(0,0,0,.16); border-left:8px solid #8edfe4; margin-bottom:18px;}
 .ya-provider-title h1{color:#00504f!important; margin:0 0 6px 0;}
 .ya-provider-title p{color:#10242a!important; margin:0;}
+
+/* Modern glass dashboard */
+.ya-dashboard-card{
+  background:rgba(255,255,255,.18);
+  border:1px solid rgba(255,255,255,.32);
+  border-radius:26px;
+  padding:18px 18px 10px;
+  box-shadow:0 18px 38px rgba(0,0,0,.16);
+  backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);
+  margin:8px 0 18px;
+}
+.ya-dashboard-card h3{
+  color:#ffffff!important;
+  margin:0 0 6px 0!important;
+  padding:0 4px 8px 4px!important;
+  font-size:18px!important;
+  letter-spacing:-.01em;
+}
+.ya-chart-caption{color:#d8f4f6!important; font-size:12px; margin-top:-4px; padding-left:4px;}
 
 /* Hide Streamlit menu/footer */
 #MainMenu, footer{visibility:hidden;}
@@ -688,38 +710,137 @@ def render_header():
 
 
 
+def add_percent(df: pd.DataFrame, count_col: str = "Count") -> pd.DataFrame:
+    if df is None or df.empty or count_col not in df.columns:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    total = float(out[count_col].sum() or 0)
+    out["%"] = (out[count_col] / total * 100).round(1) if total else 0.0
+    return out
+
+
 def make_action_category_summary(actions: pd.DataFrame, quarter: str = None) -> pd.DataFrame:
     if actions.empty:
-        return pd.DataFrame(columns=["Category", "Count"])
+        return pd.DataFrame(columns=["Category", "Count", "%"])
     df = actions.copy()
     if quarter:
         df = df[df["quarter"].eq(quarter)]
     if df.empty:
-        return pd.DataFrame(columns=["Category", "Count"])
-    return df.groupby("action_type").size().reset_index(name="Count").rename(columns={"action_type":"Category"}).sort_values("Count", ascending=False)
+        return pd.DataFrame(columns=["Category", "Count", "%"])
+    out = df.groupby("action_type").size().reset_index(name="Count").rename(columns={"action_type":"Category"}).sort_values("Count", ascending=False)
+    return add_percent(out)
 
 
 def make_breach_category_summary(breaches: pd.DataFrame, quarter: str = None) -> pd.DataFrame:
     if breaches.empty:
-        return pd.DataFrame(columns=["Category", "Count"])
+        return pd.DataFrame(columns=["Category", "Count", "%"])
     df = breaches.copy()
     if quarter:
         df = df[df["quarter"].eq(quarter)]
     if df.empty:
-        return pd.DataFrame(columns=["Category", "Count"])
-    return df.groupby("classification").size().reset_index(name="Count").rename(columns={"classification":"Category"}).sort_values("Count", ascending=False)
+        return pd.DataFrame(columns=["Category", "Count", "%"])
+    out = df.groupby("classification").size().reset_index(name="Count").rename(columns={"classification":"Category"}).sort_values("Count", ascending=False)
+    return add_percent(out)
 
 
-def render_pie(df: pd.DataFrame, title: str):
+def make_provider_action_category_summary(actions: pd.DataFrame, quarter: str = None) -> pd.DataFrame:
+    if actions.empty:
+        return pd.DataFrame(columns=["provider", "Category", "Count", "% of Category", "% of Provider Actions"])
+    df = actions.copy()
+    if quarter:
+        df = df[df["quarter"].eq(quarter)]
+    if df.empty:
+        return pd.DataFrame(columns=["provider", "Category", "Count", "% of Category", "% of Provider Actions"])
+    out = df.groupby(["provider", "action_type"]).size().reset_index(name="Count").rename(columns={"action_type":"Category"})
+    cat_total = out.groupby("Category")["Count"].transform("sum")
+    prov_total = out.groupby("provider")["Count"].transform("sum")
+    out["% of Category"] = (out["Count"] / cat_total * 100).round(1)
+    out["% of Provider Actions"] = (out["Count"] / prov_total * 100).round(1)
+    return out.sort_values(["Category", "Count"], ascending=[True, False])
+
+
+def make_provider_breach_category_summary(breaches: pd.DataFrame, quarter: str = None) -> pd.DataFrame:
+    if breaches.empty:
+        return pd.DataFrame(columns=["provider", "Category", "Count", "% of Category", "% of Provider Breaches"])
+    df = breaches.copy()
+    if quarter:
+        df = df[df["quarter"].eq(quarter)]
+    if df.empty:
+        return pd.DataFrame(columns=["provider", "Category", "Count", "% of Category", "% of Provider Breaches"])
+    out = df.groupby(["provider", "classification"]).size().reset_index(name="Count").rename(columns={"classification":"Category"})
+    cat_total = out.groupby("Category")["Count"].transform("sum")
+    prov_total = out.groupby("provider")["Count"].transform("sum")
+    out["% of Category"] = (out["Count"] / cat_total * 100).round(1)
+    out["% of Provider Breaches"] = (out["Count"] / prov_total * 100).round(1)
+    return out.sort_values(["Category", "Count"], ascending=[True, False])
+
+
+def make_provider_qoq_summary(actions: pd.DataFrame, breaches: pd.DataFrame) -> pd.DataFrame:
+    if actions.empty:
+        return pd.DataFrame()
+    rows = []
+    for (quarter, provider), a in actions.groupby(["quarter", "provider"]):
+        b = breaches[(breaches["quarter"].eq(quarter)) & (breaches["provider"].eq(provider))] if not breaches.empty else pd.DataFrame()
+        sig = int((b["classification"].eq("Significant matter: Law 165/166/167")).sum()) if not b.empty else 0
+        rows.append({
+            "quarter": quarter,
+            "provider": provider,
+            "Enforcement Actions": len(a),
+            "Breach References": len(b),
+            "L165/166/167": sig,
+            "Other": max(len(b) - sig, 0),
+        })
+    out = pd.DataFrame(rows).sort_values(["provider", "quarter"])
+    out["QoQ Action Change"] = out.groupby("provider")["Enforcement Actions"].diff().fillna(0).astype(int)
+    out["QoQ Breach Change"] = out.groupby("provider")["Breach References"].diff().fillna(0).astype(int)
+    return out
+
+
+def make_type_qoq_summary(actions: pd.DataFrame, breaches: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    action_qoq = pd.DataFrame()
+    breach_qoq = pd.DataFrame()
+    if not actions.empty:
+        action_qoq = actions.groupby(["quarter", "provider", "action_type"]).size().reset_index(name="Count")
+        action_qoq = action_qoq.sort_values(["provider", "action_type", "quarter"])
+        action_qoq["QoQ Change"] = action_qoq.groupby(["provider", "action_type"])["Count"].diff().fillna(0).astype(int)
+    if not breaches.empty:
+        breach_qoq = breaches.groupby(["quarter", "provider", "classification"]).size().reset_index(name="Count")
+        breach_qoq = breach_qoq.rename(columns={"classification":"Category"}).sort_values(["provider", "Category", "quarter"])
+        breach_qoq["QoQ Change"] = breach_qoq.groupby(["provider", "Category"])["Count"].diff().fillna(0).astype(int)
+    return action_qoq, breach_qoq
+
+
+def render_pie(df: pd.DataFrame, title: str, key: str = None):
     if df.empty or df["Count"].sum() == 0:
         st.info(f"No data available for {title.lower()}.")
         return
-    chart = alt.Chart(df).mark_arc(innerRadius=45).encode(
-        theta=alt.Theta(field="Count", type="quantitative"),
-        color=alt.Color(field="Category", type="nominal", legend=alt.Legend(title="Category")),
-        tooltip=[alt.Tooltip("Category:N"), alt.Tooltip("Count:Q")]
-    ).properties(height=330, title=title)
-    st.altair_chart(chart, use_container_width=True)
+    plot_df = add_percent(df)
+    fig = px.pie(
+        plot_df,
+        names="Category",
+        values="Count",
+        hole=0.62,
+        color_discrete_sequence=["#8edfe4", "#08245c", "#fff200", "#f59f9c", "#54b9a8", "#d6f3f5", "#4b9ca4"],
+        custom_data=["%"] if "%" in plot_df.columns else None,
+    )
+    fig.update_traces(
+        textposition="inside",
+        textinfo="percent",
+        hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Share: %{percent}<extra></extra>",
+        marker=dict(line=dict(color="rgba(255,255,255,.72)", width=2)),
+    )
+    fig.update_layout(
+        height=355,
+        margin=dict(l=8, r=8, t=8, b=8),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#ffffff", family="Inter, Arial"),
+        legend=dict(orientation="v", yanchor="middle", y=.5, xanchor="left", x=.98, font=dict(color="#ffffff", size=12), title=dict(text="Category", font=dict(color="#d8f4f6"))),
+        showlegend=True,
+    )
+    st.markdown(f"<div class='ya-dashboard-card'><h3>{title}</h3><div class='ya-chart-caption'>Includes count and percentage share for the selected quarter.</div>", unsafe_allow_html=True)
+    st.plotly_chart(fig, use_container_width=True, key=key)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def provider_detail_view(provider: str, actions: pd.DataFrame, breaches: pd.DataFrame, selected_quarters: List[str]):
@@ -761,25 +882,25 @@ def provider_detail_view(provider: str, actions: pd.DataFrame, breaches: pd.Data
     st.markdown("### Provider dashboard")
     p1, p2 = st.columns(2)
     with p1:
-        render_pie(make_action_category_summary(a), "Actions by category")
+        render_pie(make_action_category_summary(a), "Actions by category", key=f"provider_actions_pie_{provider}")
     with p2:
-        render_pie(make_breach_category_summary(b), "Breach references by category")
+        render_pie(make_breach_category_summary(b), "Breach references by category", key=f"provider_breaches_pie_{provider}")
 
     st.markdown("### Quarter trend")
     pq = quarter_summary(a, b)
-    st.dataframe(pq, use_container_width=True, hide_index=True)
+    st.dataframe(pq, use_container_width=True, hide_index=True, key=f"provider_qtrend_{provider}")
     if not pq.empty:
         st.line_chart(pq.set_index("quarter")[["Enforcement Actions", "L165/166/167", "Other"]])
 
     st.markdown("### Action category breakdown")
-    st.dataframe(make_action_category_summary(a), use_container_width=True, hide_index=True)
+    st.dataframe(make_action_category_summary(a), use_container_width=True, hide_index=True, key=f"provider_action_cat_{provider}")
 
     st.markdown("### Law/Reg references")
-    st.dataframe(make_law_summary(b), use_container_width=True, hide_index=True)
+    st.dataframe(make_law_summary(b), use_container_width=True, hide_index=True, key=f"provider_law_summary_{provider}")
 
     st.markdown("### Service/action level detail")
     display_cols = ["quarter", "report_type", "entity_id", "service_name", "date_issued", "action_type"]
-    st.dataframe(a[display_cols], use_container_width=True, hide_index=True)
+    st.dataframe(a[display_cols], use_container_width=True, hide_index=True, key=f"provider_detail_rows_{provider}")
 
     with st.expander("Show raw extracted text excerpts", expanded=False):
         for _, row in a.head(30).iterrows():
@@ -926,7 +1047,26 @@ def main():
         return
 
     quarters_all = list(dict.fromkeys(hist_actions.sort_values("processed_at", ascending=False)["quarter"].astype(str).tolist()))
-    selected_quarters = st.multiselect("Select quarters to show", quarters_all, default=quarters_all[:4], help="Default shows the most recent four processed quarters for rolling history.")
+
+    st.markdown("### Quarter controls")
+    qc1, qc2 = st.columns([1, 2])
+    with qc1:
+        current_quarter = st.selectbox(
+            "Current quarter dashboard",
+            quarters_all,
+            index=0,
+            help="Use this to search/view the dashboard one quarter at a time.",
+            key="current_quarter_select",
+        )
+    with qc2:
+        selected_quarters = st.multiselect(
+            "Rolling / comparison quarters",
+            quarters_all,
+            default=quarters_all[:4],
+            help="Default shows the most recent four processed quarters for rolling history.",
+            key="rolling_quarter_multiselect",
+        )
+
     show_actions = hist_actions[hist_actions["quarter"].isin(selected_quarters)] if selected_quarters else hist_actions
     show_breaches = hist_breaches[hist_breaches["quarter"].isin(selected_quarters)] if selected_quarters and not hist_breaches.empty else hist_breaches
 
@@ -934,7 +1074,6 @@ def main():
         provider_detail_view(st.session_state["provider_detail"], hist_actions, hist_breaches, selected_quarters)
         return
 
-    current_quarter = selected_quarters[0] if selected_quarters else quarters_all[0]
     current_actions = hist_actions[hist_actions["quarter"].eq(current_quarter)]
     current_breaches = hist_breaches[hist_breaches["quarter"].eq(current_quarter)] if not hist_breaches.empty else hist_breaches
 
@@ -962,87 +1101,125 @@ def main():
 
     st.markdown(f"<div class='ya-warning'><strong>{ya_position_text(rolling_summary)}</strong></div>", unsafe_allow_html=True)
 
-    tabs = st.tabs(["Dashboard", "Current quarter", "Rolling 4-quarter view", "Provider summary", "Trend", "Law/Reg breakdown", "Raw extracted rows", "Export"])
+    provider_action_category_current = make_provider_action_category_summary(current_actions)
+    provider_breach_category_current = make_provider_breach_category_summary(current_breaches)
+    provider_qoq = make_provider_qoq_summary(show_actions, show_breaches)
+    action_type_qoq, breach_type_qoq = make_type_qoq_summary(show_actions, show_breaches)
+
+    tabs = st.tabs(["Dashboard", "Current quarter", "Rolling 4-quarter view", "Provider summary", "Quarter-on-quarter", "Law/Reg breakdown", "Raw extracted rows", "Export"])
     with tabs[0]:
         st.caption(f"Current selected quarter: {current_quarter}")
         d1, d2 = st.columns(2)
         with d1:
-            render_pie(current_action_category, "Current quarter actions by category")
+            render_pie(current_action_category, "Current quarter actions by category", key=f"pie_actions_{current_quarter}")
         with d2:
-            render_pie(current_breach_category, "Current quarter breach references by category")
+            render_pie(current_breach_category, "Current quarter breach references by category", key=f"pie_breaches_{current_quarter}")
+
         st.markdown("### Current quarter category tables")
+        st.caption("These tables include counts and percentage share for the selected quarter and are included in the Excel export.")
         cta, ctb = st.columns(2)
         with cta:
-            st.dataframe(current_action_category, use_container_width=True, hide_index=True)
+            st.dataframe(current_action_category, use_container_width=True, hide_index=True, key="current_action_category_table")
         with ctb:
-            st.dataframe(current_breach_category, use_container_width=True, hide_index=True)
+            st.dataframe(current_breach_category, use_container_width=True, hide_index=True, key="current_breach_category_table")
+
+        st.markdown("### Competitor breakdown by category")
+        st.caption("Use this to see which providers are driving each action category and serious/other breach category.")
+        comp1, comp2 = st.columns(2)
+        with comp1:
+            st.markdown("#### Actions by provider/category")
+            st.dataframe(provider_action_category_current, use_container_width=True, hide_index=True, key="provider_action_category_current")
+        with comp2:
+            st.markdown("#### Breaches by provider/category")
+            st.dataframe(provider_breach_category_current, use_container_width=True, hide_index=True, key="provider_breach_category_current")
+
     with tabs[1]:
         st.caption(f"Current selected quarter: {current_quarter}")
         st.caption("Click one provider row to open a detailed provider summary with a back button.")
         try:
-            event = st.dataframe(current_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+            event = st.dataframe(current_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="current_summary_selectable")
             rows = event.selection.rows if hasattr(event, "selection") else []
             if rows:
                 provider = str(current_summary.iloc[rows[0]]["provider"])
                 st.session_state["provider_detail"] = provider
                 st.rerun()
         except TypeError:
-            st.dataframe(current_summary, use_container_width=True, hide_index=True)
-            provider = st.selectbox("Open provider summary", [""] + current_summary["provider"].astype(str).tolist())
-            if provider and st.button("Open selected provider"):
+            st.dataframe(current_summary, use_container_width=True, hide_index=True, key="current_summary_fallback")
+            provider = st.selectbox("Open provider summary", [""] + current_summary["provider"].astype(str).tolist(), key="current_provider_open_select")
+            if provider and st.button("Open selected provider", key="current_provider_open_btn"):
                 st.session_state["provider_detail"] = provider
                 st.rerun()
+
     with tabs[2]:
         st.caption("Selected quarters combined. This is the rolling view for board reporting. Click one provider row to open a detailed provider summary.")
         try:
-            event = st.dataframe(rolling_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+            event = st.dataframe(rolling_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="rolling_summary_selectable")
             rows = event.selection.rows if hasattr(event, "selection") else []
             if rows:
                 provider = str(rolling_summary.iloc[rows[0]]["provider"])
                 st.session_state["provider_detail"] = provider
                 st.rerun()
         except TypeError:
-            st.dataframe(rolling_summary, use_container_width=True, hide_index=True)
+            st.dataframe(rolling_summary, use_container_width=True, hide_index=True, key="rolling_summary_fallback")
         st.markdown("### Action type summary")
-        st.dataframe(action_type_summary, use_container_width=True, hide_index=True)
+        st.dataframe(action_type_summary, use_container_width=True, hide_index=True, key="rolling_action_type_summary")
+
     with tabs[3]:
         provider_list = rolling_summary["provider"].astype(str).tolist() if not rolling_summary.empty else []
-        selected_provider = st.selectbox("Choose provider", [""] + provider_list)
+        selected_provider = st.selectbox("Choose provider", [""] + provider_list, key="provider_summary_select")
         if selected_provider:
-            if st.button("Open provider summary"):
+            if st.button("Open provider summary", key="open_provider_summary_button"):
                 st.session_state["provider_detail"] = selected_provider
                 st.rerun()
             pa = show_actions[show_actions["provider"].eq(selected_provider)]
             pb = show_breaches[show_breaches["provider"].eq(selected_provider)] if not show_breaches.empty else show_breaches
             st.markdown("### Quick provider snapshot")
             snapshot = make_provider_summary(pa, pb)
-            st.dataframe(snapshot, use_container_width=True, hide_index=True)
+            st.dataframe(snapshot, use_container_width=True, hide_index=True, key="provider_snapshot_table")
             sc1, sc2 = st.columns(2)
             with sc1:
-                render_pie(make_action_category_summary(pa), "Actions by category")
+                render_pie(make_action_category_summary(pa), "Actions by category", key=f"provider_tab_actions_{selected_provider}")
             with sc2:
-                render_pie(make_breach_category_summary(pb), "Breach references by category")
+                render_pie(make_breach_category_summary(pb), "Breach references by category", key=f"provider_tab_breaches_{selected_provider}")
+
     with tabs[4]:
-        st.caption("Quarter-by-quarter historical tracking.")
-        st.dataframe(q_summary, use_container_width=True, hide_index=True)
+        st.caption("Quarter-on-quarter stats by competitor and issue/action type.")
+        st.markdown("### Provider quarter-on-quarter movement")
+        st.dataframe(provider_qoq, use_container_width=True, hide_index=True, key="provider_qoq_table")
+        st.markdown("### Action type quarter-on-quarter by provider")
+        st.dataframe(action_type_qoq, use_container_width=True, hide_index=True, key="action_type_qoq_table")
+        st.markdown("### Breach category quarter-on-quarter by provider")
+        st.dataframe(breach_type_qoq, use_container_width=True, hide_index=True, key="breach_type_qoq_table")
+        st.markdown("### Overall quarter trend")
+        st.dataframe(q_summary, use_container_width=True, hide_index=True, key="quarter_summary_table")
         if not q_summary.empty:
             chart_df = q_summary.set_index("quarter")[["Enforcement Actions", "L165/166/167", "Other"]]
             st.line_chart(chart_df)
+
     with tabs[5]:
-        st.dataframe(law_summary, use_container_width=True, hide_index=True)
+        st.dataframe(law_summary, use_container_width=True, hide_index=True, key="law_summary_table")
         if not show_breaches.empty:
             st.markdown("### Serious matters only: Law 165/166/167")
             sig_only = show_breaches[show_breaches["classification"].eq("Significant matter: Law 165/166/167")]
-            st.dataframe(make_law_summary(sig_only), use_container_width=True, hide_index=True)
+            st.dataframe(make_law_summary(sig_only), use_container_width=True, hide_index=True, key="serious_law_summary_table")
+
     with tabs[6]:
         st.markdown("### Extracted enforcement actions")
-        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True)
+        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True, key="raw_actions_table")
         st.markdown("### Extracted breach references")
-        st.dataframe(show_breaches, use_container_width=True, hide_index=True)
+        st.dataframe(show_breaches, use_container_width=True, hide_index=True, key="raw_breaches_table")
+
     with tabs[7]:
         sheets = {
             "Current Provider Ranking": current_summary,
             "Rolling Provider Ranking": rolling_summary,
+            "Current Action Categories": current_action_category,
+            "Current Breach Categories": current_breach_category,
+            "Provider Action Categories": provider_action_category_current,
+            "Provider Breach Categories": provider_breach_category_current,
+            "Provider QoQ": provider_qoq,
+            "Action Type QoQ": action_type_qoq,
+            "Breach Category QoQ": breach_type_qoq,
             "Quarter Trend": q_summary,
             "Law Reg Breakdown": law_summary,
             "Action Type Summary": action_type_summary,
@@ -1052,8 +1229,8 @@ def main():
             "Uploaded Reports": load_reports_history(),
         }
         xlsx = to_excel_bytes(sheets)
-        st.download_button("Download Excel report", xlsx, "YA_Compliance_Benchmark_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.download_button("Download full history database", open(DB_PATH, "rb").read(), "compliance_history.sqlite3", "application/octet-stream")
+        st.download_button("Download Excel report", xlsx, "YA_Compliance_Benchmark_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_report")
+        st.download_button("Download full history database", open(DB_PATH, "rb").read(), "compliance_history.sqlite3", "application/octet-stream", key="download_history_db")
 
     st.caption("Internal use only. Review provider mapping before board or Commission reporting, as NSW PDFs often list service names rather than provider groups.")
 
