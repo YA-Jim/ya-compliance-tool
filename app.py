@@ -1,26 +1,3 @@
-import streamlit as st
-
-# ---- PASSWORD PROTECTION ----
-def check_password():
-    def password_entered():
-        if st.session_state["password"] == "YA2026!":
-            st.session_state["password_correct"] = True
-        else:
-            st.session_state["password_correct"] = False
-
-    if "password_correct" not in st.session_state:
-        st.text_input("Enter password", type="password", on_change=password_entered, key="password")
-        return False
-    elif not st.session_state["password_correct"]:
-        st.text_input("Enter password", type="password", on_change=password_entered, key="password")
-        st.error("Incorrect password")
-        return False
-    else:
-        return True
-
-if not check_password():
-    st.stop()
-
 import io
 import os
 import re
@@ -41,7 +18,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v2.2 — Simple Role Login"
+APP_VERSION = "v2.3 — Admin Review Workflow"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -404,7 +381,7 @@ def logout_button():
 def render_admin_user_manager():
     if not is_admin():
         return
-    with st.expander("Admin: user management", expanded=False):
+    with st.popover("👤 Admin users", use_container_width=False):
         st.caption("Only admins can create users/admins, change passwords, deactivate accounts, and view audit logs.")
         con = sqlite3.connect(DB_PATH)
         users_df = pd.read_sql_query("SELECT email, role, active, created_at, updated_at, created_by FROM users ORDER BY role, email", con)
@@ -614,9 +591,43 @@ MONTH_ABBR = {
     "july": "Jul", "august": "Aug", "september": "Sep", "october": "Oct", "november": "Nov", "december": "Dec",
 }
 
+REPORT_TYPE_OPTIONS = [
+    "— Select report type —",
+    "Service Enforcement",
+    "Provider Approval Cancellation",
+    "Service Approval Cancellation",
+    "Involuntary Suspension",
+    "Provider Enforcement",
+]
+
+def quarter_label(qnum: int, fy_start_yyyy: int) -> str:
+    fy1 = str(fy_start_yyyy)[-2:]
+    fy2 = str(fy_start_yyyy + 1)[-2:]
+    if qnum == 1:
+        return f"Q1 FY{fy1}/{fy2} — Jul–Sep {fy_start_yyyy}"
+    if qnum == 2:
+        return f"Q2 FY{fy1}/{fy2} — Oct–Dec {fy_start_yyyy}"
+    if qnum == 3:
+        return f"Q3 FY{fy1}/{fy2} — Jan–Mar {fy_start_yyyy + 1}"
+    return f"Q4 FY{fy1}/{fy2} — Apr–Jun {fy_start_yyyy + 1}"
+
+def quarter_options() -> List[str]:
+    # Covers historic imports and the next few years. Enforced dropdown means labels stay consistent.
+    years = range(2023, 2030)
+    return ["— Select quarter —"] + [quarter_label(q, y) for y in years for q in (1, 2, 3, 4)]
+
+def quarter_from_filename_or_text(source: str) -> str:
+    # Handles filenames like Q1_Service_Enforcement_Action_Information_2025_2026.pdf
+    m = re.search(r"Q([1-4]).*?(20\d{2})[_\-/](20\d{2})", source, re.I)
+    if m:
+        return quarter_label(int(m.group(1)), int(m.group(2)))
+    return ""
+
 def normalise_quarter_label(text: str, fallback: str = "") -> str:
-    """Return a strict label like Q2 FY25/26 — Oct–Dec 2025 from NSW PDF header text."""
-    source = text or fallback or ""
+    """Return a strict label like Q2 FY25/26 — Oct–Dec 2025 from NSW PDF header text or filename."""
+    source = f"{fallback}\n{text or ''}"
+
+    # 1) Best case: official header contains Qx FYyy/yy and month range.
     q = re.search(r"\bQ([1-4])\s*FY\s*(20)?(\d{2})\s*/\s*(20)?(\d{2})\b", source, re.I)
     m = re.search(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+to\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})", source, re.I)
     if q and m:
@@ -627,11 +638,17 @@ def normalise_quarter_label(text: str, fallback: str = "") -> str:
         end = MONTH_ABBR[m.group(2).lower()]
         year = m.group(3)
         return f"Q{qnum} FY{fy1}/{fy2} — {start}–{end} {year}"
-    # If the user typed something already that matches the standard, preserve it.
+
+    # 2) Filename fallback: Q1_..._2025_2026.pdf → Q1 FY25/26 — Jul–Sep 2025.
+    derived = quarter_from_filename_or_text(source)
+    if derived:
+        return derived
+
+    # 3) Preserve already-standard labels only.
     clean = (fallback or "").strip()
     if re.match(r"^Q[1-4]\s+FY\d{2}/\d{2}\s+—\s+[A-Z][a-z]{2}–[A-Z][a-z]{2}\s+20\d{2}$", clean):
         return clean
-    return clean or "UNIDENTIFIED QUARTER — CHECK PDF"
+    return "UNIDENTIFIED QUARTER — CHECK PDF"
 
 
 def file_signature(uploaded_file) -> str:
@@ -689,7 +706,7 @@ def build_upload_review(uploaded_files: List, provider_rules) -> Tuple[pd.DataFr
         try:
             txt = read_pdf_text(f)
             cache[f.name] = txt
-            quarter = normalise_quarter_label(txt)
+            quarter = normalise_quarter_label(txt, f.name)
             report_type = detect_report_type(txt, f.name)
             existing = report_already_uploaded(quarter, report_type) if not quarter.startswith("UNIDENTIFIED") and not report_type.startswith("UNIDENTIFIED") else 0
             batch_key = (quarter, report_type)
@@ -707,20 +724,52 @@ def build_upload_review(uploaded_files: List, provider_rules) -> Tuple[pd.DataFr
                 status = "Ready"
             rows.append({
                 "File": f.name,
-                "Detected quarter": quarter,
-                "Detected report type": report_type,
+                "Detected quarter": quarter if not quarter.startswith("UNIDENTIFIED") else "— Select quarter —",
+                "Detected report type": report_type if not report_type.startswith("UNIDENTIFIED") else "— Select report type —",
                 "Existing rows": existing,
                 "Status": status,
             })
         except Exception as e:
             rows.append({
                 "File": getattr(f, "name", "Uploaded file"),
-                "Detected quarter": "ERROR",
-                "Detected report type": "ERROR",
+                "Detected quarter": "— Select quarter —",
+                "Detected report type": "— Select report type —",
                 "Existing rows": 0,
                 "Status": f"Could not read PDF — {str(e)[:120]}",
             })
     return pd.DataFrame(rows), cache
+
+
+def recalc_upload_review(edited_df: pd.DataFrame) -> pd.DataFrame:
+    """Recalculate duplicate/existing statuses after an admin edits quarter/report-type dropdowns."""
+    if edited_df is None or edited_df.empty:
+        return pd.DataFrame()
+    df = edited_df.copy()
+    statuses = []
+    existing_rows = []
+    seen = set()
+    for _, row in df.iterrows():
+        quarter = str(row.get("Detected quarter", ""))
+        report_type = str(row.get("Detected report type", ""))
+        existing = report_already_uploaded(quarter, report_type) if quarter in quarter_options() and report_type in REPORT_TYPE_OPTIONS else 0
+        key = (quarter, report_type)
+        duplicate = key in seen
+        seen.add(key)
+        if quarter == "— Select quarter —" or quarter not in quarter_options():
+            status = "Needs check — select quarter"
+        elif report_type == "— Select report type —" or report_type not in REPORT_TYPE_OPTIONS:
+            status = "Needs check — select report type"
+        elif duplicate:
+            status = "Duplicate in this upload batch"
+        elif existing:
+            status = f"Already uploaded — {existing} existing action rows"
+        else:
+            status = "Ready"
+        statuses.append(status)
+        existing_rows.append(existing)
+    df["Existing rows"] = existing_rows
+    df["Status"] = statuses
+    return df
 
 
 def render_kpi_notes():
@@ -1215,8 +1264,22 @@ def main():
         with st.spinner("Reading PDF headers and checking saved history…"):
             review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
         st.markdown("### Upload review")
-        st.caption("Check this table before saving. The app blocks unidentified files and duplicates by default.")
-        st.dataframe(review_df, use_container_width=True, hide_index=True, key="bulk_upload_review_table")
+        st.caption("Admin step: fix any unidentified quarter/report type before saving. Quarter and report type are dropdowns so the naming convention stays locked.")
+        review_df = st.data_editor(
+            review_df,
+            use_container_width=True,
+            hide_index=True,
+            key="bulk_upload_review_editor",
+            disabled=["File", "Existing rows", "Status"],
+            column_config={
+                "Detected quarter": st.column_config.SelectboxColumn("Quarter", options=quarter_options(), required=True),
+                "Detected report type": st.column_config.SelectboxColumn("Report type", options=REPORT_TYPE_OPTIONS, required=True),
+                "Existing rows": st.column_config.NumberColumn("Existing rows", disabled=True),
+                "Status": st.column_config.TextColumn("Status", disabled=True),
+            },
+        )
+        review_df = recalc_upload_review(review_df)
+        st.dataframe(review_df, use_container_width=True, hide_index=True, key="bulk_upload_review_recalculated")
 
         ready_count = int((review_df["Status"] == "Ready").sum()) if not review_df.empty else 0
         existing_count = int(review_df["Status"].astype(str).str.startswith("Already uploaded").sum()) if not review_df.empty else 0
@@ -1269,8 +1332,9 @@ def main():
         else:
             if review_df.empty:
                 review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
+            review_df = recalc_upload_review(review_df)
 
-            bad = review_df[review_df["Detected quarter"].astype(str).str.startswith(("ERROR", "UNIDENTIFIED")) | review_df["Detected report type"].astype(str).str.startswith(("ERROR", "UNIDENTIFIED")) | review_df["Status"].astype(str).eq("Duplicate in this upload batch")]
+            bad = review_df[review_df["Status"].astype(str).str.startswith("Needs check") | review_df["Status"].astype(str).eq("Duplicate in this upload batch")]
             if not bad.empty:
                 st.error("Some uploaded files could not be safely identified or are duplicated in this batch. Remove/fix those files first.")
                 st.dataframe(bad, use_container_width=True, hide_index=True, key="bulk_bad_files_table")
