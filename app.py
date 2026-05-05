@@ -18,7 +18,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v2.4 — Admin Review Workflow"
+APP_VERSION = "v2.5 — Admin Review Workflow"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -252,6 +252,51 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
   letter-spacing:-.01em;
 }
 .ya-chart-caption{color:#d8f4f6!important; font-size:12px; margin-top:-4px; padding-left:4px;}
+
+
+
+/* Upload review table - no dimming/backdrop during edits */
+[data-baseweb="modal"]{background:transparent!important;}
+[data-baseweb="modal"] > div{background:transparent!important;}
+[data-baseweb="popover"]{z-index:999999!important; opacity:1!important;}
+[data-baseweb="popover"] ul{max-height:320px!important; overflow:auto!important;}
+[data-testid="stAppViewContainer"], .main, .block-container{opacity:1!important; filter:none!important;}
+
+.ya-upload-review-card{
+  background:#ffffff;
+  border-radius:20px;
+  overflow:hidden;
+  box-shadow:0 14px 30px rgba(0,0,0,.16);
+  border:1px solid #b8dce1;
+  margin:14px 0 22px;
+}
+.ya-upload-row{
+  border-bottom:1px solid #e2edf0;
+  padding:8px 10px;
+  color:#10242a!important;
+}
+.ya-upload-head{
+  background:#f2f6f8;
+  border-bottom:1px solid #d8e6ea;
+  padding:10px;
+  font-weight:900;
+  color:#51636b!important;
+}
+.ya-upload-file{font-weight:750; color:#10242a!important; padding-top:8px; overflow-wrap:anywhere;}
+.ya-upload-status{font-weight:750; color:#10242a!important; padding-top:8px; font-size:13px;}
+.ya-upload-remove button{
+  width:42px!important;
+  height:40px!important;
+  padding:0!important;
+  border-radius:12px!important;
+  background:#ffffff!important;
+  color:#b42318!important;
+  box-shadow:none!important;
+  border:1.5px solid #f4b0aa!important;
+  font-size:17px!important;
+}
+.ya-upload-remove button:hover{background:#fff1f0!important; transform:none!important; box-shadow:none!important;}
+.ya-upload-review-card [data-testid="column"]{padding:0 4px!important;}
 
 /* Hide Streamlit menu/footer */
 #MainMenu, footer{visibility:hidden;}
@@ -785,6 +830,104 @@ def recalc_upload_review(edited_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+
+
+def _file_row_key(file_name: str) -> str:
+    return hashlib.sha1(str(file_name).encode("utf-8")).hexdigest()[:12]
+
+
+def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
+    """Manual upload review editor. Avoids st.data_editor dropdown/overlay bugs and uses trash buttons."""
+    if review_df is None or review_df.empty:
+        return pd.DataFrame()
+
+    upload_sig = "|".join(review_df["File"].astype(str).tolist())
+    if st.session_state.get("upload_review_signature") != upload_sig:
+        # New upload batch: reset row removals but preserve nothing from old batch.
+        st.session_state["upload_review_signature"] = upload_sig
+        st.session_state["upload_removed_files"] = []
+        for f in review_df["File"].astype(str):
+            rk = _file_row_key(f)
+            st.session_state.pop(f"review_quarter_{rk}", None)
+            st.session_state.pop(f"review_type_{rk}", None)
+
+    removed = set(st.session_state.get("upload_removed_files", []))
+
+    # Initialise selectable values from detected values.
+    for _, row in review_df.iterrows():
+        fname = str(row["File"])
+        rk = _file_row_key(fname)
+        q_key = f"review_quarter_{rk}"
+        t_key = f"review_type_{rk}"
+        if q_key not in st.session_state:
+            q_val = str(row.get("Detected quarter", "— Select quarter —"))
+            st.session_state[q_key] = q_val if q_val in quarter_options() else "— Select quarter —"
+        if t_key not in st.session_state:
+            t_val = str(row.get("Detected report type", "— Select report type —"))
+            st.session_state[t_key] = t_val if t_val in REPORT_TYPE_OPTIONS else "— Select report type —"
+
+    # Build active dataframe from current session state.
+    rows = []
+    for _, row in review_df.iterrows():
+        fname = str(row["File"])
+        if fname in removed:
+            continue
+        rk = _file_row_key(fname)
+        rows.append({
+            "File": fname,
+            "Detected quarter": st.session_state.get(f"review_quarter_{rk}", "— Select quarter —"),
+            "Detected report type": st.session_state.get(f"review_type_{rk}", "— Select report type —"),
+            "Existing rows": int(row.get("Existing rows", 0) or 0),
+            "Status": str(row.get("Status", "")),
+        })
+    active_df = recalc_upload_review(pd.DataFrame(rows)) if rows else pd.DataFrame(columns=["File","Detected quarter","Detected report type","Existing rows","Status"])
+
+    st.markdown("<div class='ya-upload-review-card'>", unsafe_allow_html=True)
+    hcols = st.columns([.55, 3.4, 2.3, 2.4, .95, 2.05])
+    headers = ["", "File", "Quarter", "Report type", "Existing", "Status"]
+    for c, h in zip(hcols, headers):
+        c.markdown(f"<div class='ya-upload-head'>{h}</div>", unsafe_allow_html=True)
+
+    for _, row in active_df.iterrows():
+        fname = str(row["File"])
+        rk = _file_row_key(fname)
+        rcols = st.columns([.55, 3.4, 2.3, 2.4, .95, 2.05])
+        with rcols[0]:
+            st.markdown("<div class='ya-upload-remove'>", unsafe_allow_html=True)
+            if st.button("🗑", key=f"remove_upload_{rk}", help=f"Remove {fname} from this upload"):
+                st.session_state.setdefault("upload_removed_files", [])
+                if fname not in st.session_state["upload_removed_files"]:
+                    st.session_state["upload_removed_files"].append(fname)
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+        rcols[1].markdown(f"<div class='ya-upload-file'>{fname}</div>", unsafe_allow_html=True)
+        with rcols[2]:
+            current_q = st.session_state.get(f"review_quarter_{rk}", "— Select quarter —")
+            q_opts = quarter_options()
+            st.selectbox(
+                "Quarter",
+                q_opts,
+                index=q_opts.index(current_q) if current_q in q_opts else 0,
+                key=f"review_quarter_{rk}",
+                label_visibility="collapsed",
+            )
+        with rcols[3]:
+            current_t = st.session_state.get(f"review_type_{rk}", "— Select report type —")
+            st.selectbox(
+                "Report type",
+                REPORT_TYPE_OPTIONS,
+                index=REPORT_TYPE_OPTIONS.index(current_t) if current_t in REPORT_TYPE_OPTIONS else 0,
+                key=f"review_type_{rk}",
+                label_visibility="collapsed",
+            )
+        rcols[4].markdown(f"<div class='ya-upload-status'>{int(row.get('Existing rows', 0) or 0)}</div>", unsafe_allow_html=True)
+        rcols[5].markdown(f"<div class='ya-upload-status'>{row.get('Status','')}</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if removed:
+        st.info(f"{len(removed)} file(s) removed from this upload consideration. Re-upload the batch or clear the uploader if you need them back.")
+    return active_df
+
 def render_kpi_notes():
     st.markdown("""
     <div class='ya-note-grid'>
@@ -1276,29 +1419,9 @@ def main():
         with st.spinner("Reading PDF headers and checking saved history…"):
             review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
         st.markdown("### Upload review")
-        st.caption("Admin step: fix any unidentified quarter/report type before saving. Quarter and report type are dropdowns so the naming convention stays locked.")
-        review_df = review_df.copy()
-        review_df.insert(0, "Remove", False)
-        review_df = st.data_editor(
-            review_df,
-            use_container_width=True,
-            hide_index=True,
-            key="bulk_upload_review_editor",
-            disabled=["File", "Existing rows", "Status"],
-            column_config={
-                "Remove": st.column_config.CheckboxColumn("Remove", help="Tick to exclude this file from this upload."),
-                "Detected quarter": st.column_config.SelectboxColumn("Quarter", options=quarter_options(), required=True),
-                "Detected report type": st.column_config.SelectboxColumn("Report type", options=REPORT_TYPE_OPTIONS, required=True),
-                "Existing rows": st.column_config.NumberColumn("Existing rows", disabled=True),
-                "Status": st.column_config.TextColumn("Status", disabled=True),
-            },
-        )
-        removed_count = int(review_df["Remove"].fillna(False).sum()) if "Remove" in review_df.columns else 0
-        active_review_df = review_df[~review_df["Remove"].fillna(False)].drop(columns=["Remove"], errors="ignore").copy()
-        active_review_df = recalc_upload_review(active_review_df)
-        review_df.loc[~review_df["Remove"].fillna(False), "Status"] = active_review_df["Status"].values if not active_review_df.empty else []
-        if removed_count:
-            st.info(f"{removed_count} file(s) marked for removal from this upload. They will not be processed or saved.")
+        st.caption("Admin step: fix any unidentified quarter/report type before saving. Use the trash icon to remove a file from this upload. Quarter and report type are dropdowns so the naming convention stays locked.")
+        active_review_df = render_upload_review_editor(review_df)
+        review_df = active_review_df.copy()
 
         ready_count = int((active_review_df["Status"] == "Ready").sum()) if not active_review_df.empty else 0
         existing_count = int(active_review_df["Status"].astype(str).str.startswith("Already uploaded").sum()) if not active_review_df.empty else 0
@@ -1351,10 +1474,10 @@ def main():
         else:
             if review_df.empty:
                 review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
-            if "Remove" in review_df.columns:
-                active_review_df = review_df[~review_df["Remove"].fillna(False)].drop(columns=["Remove"], errors="ignore").copy()
-            else:
+            if not review_df.empty:
                 active_review_df = review_df.copy()
+            else:
+                active_review_df = render_upload_review_editor(review_df)
             review_df = recalc_upload_review(active_review_df)
 
             bad = review_df[review_df["Status"].astype(str).str.startswith("Needs check") | review_df["Status"].astype(str).eq("Duplicate in this upload batch")]
