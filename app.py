@@ -42,7 +42,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v1.9 — Internal Build"
+APP_VERSION = "v2.0 — Internal Build"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -373,7 +373,8 @@ def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame, report_meta: pd.Da
         breaches.to_sql("breaches", con, if_exists="append", index=False)
     if not actions.empty:
         run_id = str(actions["run_id"].iloc[0])
-        quarter = str(actions["quarter"].iloc[0])
+        quarters = sorted([str(q) for q in actions["quarter"].dropna().unique().tolist()])
+        quarter = quarters[0] if len(quarters) == 1 else f"Bulk upload — {len(quarters)} quarters"
         con.execute("INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?,?)", (run_id, quarter, processed_at, len(actions), len(breaches), ""))
     if report_meta is not None and not report_meta.empty:
         report_meta = report_meta.copy()
@@ -465,6 +466,76 @@ def report_already_uploaded(quarter: str, report_type: str) -> int:
     finally:
         con.close()
     return int(count or 0)
+
+
+def detect_report_type(text: str, file_name: str = "") -> str:
+    """Classify NSW PDF report type from header/title text."""
+    source = f"{file_name}\n{text[:4000]}".lower()
+    if "provider approval cancellations" in source or "provider cancellations" in source:
+        return "Provider Approval Cancellation"
+    if "service approval cancellations" in source or "service cancellations" in source:
+        return "Service Approval Cancellation"
+    if "involuntary suspensions" in source or "grounds for involuntary suspension" in source:
+        return "Involuntary Suspension"
+    if "enforceable undertakings" in source or "emergency action notices" in source or "compliance notices" in source or "reason for enforcement action" in source:
+        return "Service Enforcement"
+    return "UNIDENTIFIED REPORT TYPE"
+
+
+def delete_report_data(quarter: str, report_type: str):
+    """Remove one quarter/report-type safely before replacing it."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    action_ids = [r[0] for r in cur.execute("SELECT action_id FROM actions WHERE quarter=? AND report_type=?", (quarter, report_type)).fetchall()]
+    if action_ids:
+        placeholders = ",".join(["?"] * len(action_ids))
+        cur.execute(f"DELETE FROM breaches WHERE action_id IN ({placeholders})", action_ids)
+    cur.execute("DELETE FROM actions WHERE quarter=? AND report_type=?", (quarter, report_type))
+    cur.execute("DELETE FROM reports WHERE quarter=? AND report_type=?", (quarter, report_type))
+    con.commit(); con.close()
+
+
+def build_upload_review(uploaded_files: List, provider_rules) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """Read all dropped files, identify quarter/report type, and prepare review table."""
+    rows = []
+    cache = {}
+    seen_in_batch = set()
+    for f in uploaded_files or []:
+        try:
+            txt = read_pdf_text(f)
+            cache[f.name] = txt
+            quarter = normalise_quarter_label(txt)
+            report_type = detect_report_type(txt, f.name)
+            existing = report_already_uploaded(quarter, report_type) if not quarter.startswith("UNIDENTIFIED") and not report_type.startswith("UNIDENTIFIED") else 0
+            batch_key = (quarter, report_type)
+            duplicate_in_batch = batch_key in seen_in_batch
+            seen_in_batch.add(batch_key)
+            if quarter.startswith("UNIDENTIFIED"):
+                status = "Needs check — quarter not detected"
+            elif report_type.startswith("UNIDENTIFIED"):
+                status = "Needs check — report type not detected"
+            elif duplicate_in_batch:
+                status = "Duplicate in this upload batch"
+            elif existing:
+                status = f"Already uploaded — {existing} existing action rows"
+            else:
+                status = "Ready"
+            rows.append({
+                "File": f.name,
+                "Detected quarter": quarter,
+                "Detected report type": report_type,
+                "Existing rows": existing,
+                "Status": status,
+            })
+        except Exception as e:
+            rows.append({
+                "File": getattr(f, "name", "Uploaded file"),
+                "Detected quarter": "ERROR",
+                "Detected report type": "ERROR",
+                "Existing rows": 0,
+                "Status": f"Could not read PDF — {str(e)[:120]}",
+            })
+    return pd.DataFrame(rows), cache
 
 
 def render_kpi_notes():
@@ -927,58 +998,63 @@ def main():
 
     provider_rules = df_to_rules(edited_map)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        service_enforcement = st.file_uploader("Service Enforcement Action Information PDF", type=["pdf"], key="service")
-        provider_cancel = st.file_uploader("Provider Cancellations PDF", type=["pdf"], key="pcancel")
-    with c2:
-        service_cancel = st.file_uploader("Service Cancellations PDF", type=["pdf"], key="scancel")
-        suspension = st.file_uploader("Involuntary Suspensions PDF", type=["pdf"], key="susp")
+    st.markdown("""
+    <div class='ya-note' style='margin-top:8px;'>
+      Drop any NSW quarterly enforcement PDFs here. You can upload one quarter, a partial quarter, or a full year at once. The app will detect the quarter and report type from each PDF header before saving.
+    </div>
+    """, unsafe_allow_html=True)
 
-    uploaded_for_quarter = [f for f in [service_enforcement, provider_cancel, service_cancel, suspension] if f is not None]
-    detected_quarters = []
+    bulk_files = st.file_uploader(
+        "Drop all NSW enforcement PDFs here",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="bulk_pdf_upload",
+        help="Accepts Service Enforcement, Provider Cancellations, Service Cancellations, and Involuntary Suspensions PDFs. Missing reports are allowed.",
+    )
+
+    review_df = pd.DataFrame()
     file_text_cache = {}
-    for f in uploaded_for_quarter:
-        try:
-            txt = read_pdf_text(f)
-            file_text_cache[f.name] = txt
-            detected_quarters.append(normalise_quarter_label(txt))
-        except Exception:
-            pass
-    detected_quarters = [q for q in detected_quarters if q and not q.startswith("UNIDENTIFIED")]
-    inferred_quarter = detected_quarters[0] if detected_quarters else ""
-    quarter_mismatch = len(set(detected_quarters)) > 1
+    if bulk_files:
+        with st.spinner("Reading PDF headers and checking saved history…"):
+            review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
+        st.markdown("### Upload review")
+        st.caption("Check this table before saving. The app blocks unidentified files and duplicates by default.")
+        st.dataframe(review_df, use_container_width=True, hide_index=True, key="bulk_upload_review_table")
 
-    qcol1, qcol2 = st.columns([1.2, 1])
-    with qcol1:
-        quarter = st.text_input("Quarter label — automatically read from uploaded PDF header", value=inferred_quarter, disabled=True if inferred_quarter else False, placeholder="Upload a NSW PDF to auto-detect quarter")
-    with qcol2:
-        if inferred_quarter:
-            st.success(f"Detected: {inferred_quarter}")
-        elif uploaded_for_quarter:
-            st.warning("Could not detect the quarter from the uploaded PDFs. Check the files are the NSW quarterly reports.")
-        else:
-            st.caption("Upload at least one quarterly PDF and the app will enforce the standard quarter label.")
-        if quarter_mismatch:
-            st.error("Quarter mismatch: uploaded PDFs appear to be from different quarters. Remove the incorrect file before processing.")
+        ready_count = int((review_df["Status"] == "Ready").sum()) if not review_df.empty else 0
+        existing_count = int(review_df["Status"].astype(str).str.startswith("Already uploaded").sum()) if not review_df.empty else 0
+        blocked_count = len(review_df) - ready_count - existing_count
+        rc1, rc2, rc3 = st.columns(3)
+        rc1.metric("Ready to save", ready_count)
+        rc2.metric("Already uploaded", existing_count)
+        rc3.metric("Needs check", blocked_count)
+
+        process_mode = st.radio(
+            "How should duplicates be handled?",
+            ["Process new files only", "Replace existing quarter/report type", "Stop if anything already exists"],
+            horizontal=True,
+            key="bulk_duplicate_mode",
+        )
+    else:
+        process_mode = "Process new files only"
 
     action_col, history_col = st.columns([1, 1])
     with action_col:
-        process_clicked = st.button("Process uploaded reports")
+        process_clicked = st.button("Process uploaded PDFs", key="process_bulk_pdfs")
     with history_col:
         with st.expander("History manager", expanded=False):
             reports_history = load_reports_history()
             st.caption(f"Saved runs: {len(runs)}")
             if not reports_history.empty:
                 st.markdown("**Saved reports by quarter/type**")
-                st.dataframe(reports_history[["quarter", "report_type", "file_name", "actions_count", "breaches_count", "processed_at"]], use_container_width=True, hide_index=True)
+                st.dataframe(reports_history[["quarter", "report_type", "file_name", "actions_count", "breaches_count", "processed_at"]], use_container_width=True, hide_index=True, key="saved_reports_history_table")
             if not runs.empty:
                 run_labels = [f"{r['quarter']} — {r['processed_at']} — {r['actions_count']} actions" for _, r in runs.iterrows()]
-                selected_delete = st.selectbox("Delete a saved run", [""] + run_labels)
+                selected_delete = st.selectbox("Delete a saved run", [""] + run_labels, key="delete_saved_run_select")
                 if selected_delete:
                     idx = run_labels.index(selected_delete)
                     run_id_to_delete = runs.iloc[idx]["run_id"]
-                    if st.button("Delete selected run"):
+                    if st.button("Delete selected run", key="delete_selected_run_btn"):
                         delete_run(run_id_to_delete)
                         st.success("Deleted. Refreshing…")
                         st.rerun()
@@ -986,57 +1062,67 @@ def main():
                 st.caption("No saved runs yet.")
 
     if process_clicked:
-        uploads = [
-            (service_enforcement, "Service Enforcement"),
-            (provider_cancel, "Provider Approval Cancellation"),
-            (service_cancel, "Service Approval Cancellation"),
-            (suspension, "Involuntary Suspension"),
-        ]
-        uploads = [(f, r) for f, r in uploads if f is not None]
-        if not uploads:
+        if not bulk_files:
             st.error("Upload at least one PDF before processing.")
-        elif not quarter:
-            st.error("Quarter could not be detected. Use the official NSW quarterly PDFs and try again.")
-        elif quarter_mismatch:
-            st.error("Cannot process because the uploaded PDFs appear to be from different quarters.")
         else:
-            duplicates = []
-            for file, rtype in uploads:
-                existing = report_already_uploaded(quarter, rtype)
-                if existing:
-                    duplicates.append(f"{rtype} — {existing} existing rows")
-            if duplicates:
-                st.error("This data has already been uploaded for the selected quarter. Check History manager / Saved reports before uploading again: " + "; ".join(duplicates))
+            if review_df.empty:
+                review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
+
+            bad = review_df[review_df["Detected quarter"].astype(str).str.startswith(("ERROR", "UNIDENTIFIED")) | review_df["Detected report type"].astype(str).str.startswith(("ERROR", "UNIDENTIFIED")) | review_df["Status"].astype(str).eq("Duplicate in this upload batch")]
+            if not bad.empty:
+                st.error("Some uploaded files could not be safely identified or are duplicated in this batch. Remove/fix those files first.")
+                st.dataframe(bad, use_container_width=True, hide_index=True, key="bulk_bad_files_table")
+            elif process_mode == "Stop if anything already exists" and (review_df["Existing rows"] > 0).any():
+                st.error("At least one quarter/report type already exists. Choose 'Process new files only' or 'Replace existing quarter/report type'.")
             else:
                 run_id = datetime.now().strftime("%Y%m%d%H%M%S")
                 all_actions, all_breaches, report_meta = [], [], []
-                with st.spinner("Reading PDFs, extracting actions, classifying breaches, checking duplicates, and saving history…"):
-                    for file, rtype in uploads:
-                        txt = file_text_cache.get(file.name) or read_pdf_text(file)
-                        a, b = parse_pdf(file, quarter, rtype, provider_rules, run_id=run_id, pre_read_text=txt)
-                        sig = file_signature(file)
+                processed_files = 0
+                skipped_files = []
+                with st.spinner("Processing bulk upload: extracting rows, classifying breaches, grouping quarters, and saving history…"):
+                    for f in bulk_files:
+                        row = review_df[review_df["File"].eq(f.name)].iloc[0]
+                        quarter = str(row["Detected quarter"])
+                        rtype = str(row["Detected report type"])
+                        existing = int(row["Existing rows"] or 0)
+                        if existing and process_mode == "Process new files only":
+                            skipped_files.append(f"{f.name} — already uploaded")
+                            continue
+                        if existing and process_mode == "Replace existing quarter/report type":
+                            delete_report_data(quarter, rtype)
+
+                        txt = file_text_cache.get(f.name) or read_pdf_text(f)
+                        a, b = parse_pdf(f, quarter, rtype, provider_rules, run_id=run_id, pre_read_text=txt)
+                        if a.empty:
+                            skipped_files.append(f"{f.name} — no action rows extracted")
+                            continue
                         all_actions.append(a)
                         all_breaches.append(b)
                         report_meta.append({
                             "run_id": run_id,
                             "quarter": quarter,
                             "report_type": rtype,
-                            "file_name": file.name,
-                            "file_signature": sig,
+                            "file_name": f.name,
+                            "file_signature": file_signature(f),
                             "actions_count": len(a),
                             "breaches_count": len(b),
                             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         })
+                        processed_files += 1
+
                 actions = pd.concat(all_actions, ignore_index=True) if all_actions else pd.DataFrame()
                 breaches = pd.concat(all_breaches, ignore_index=True) if all_breaches else pd.DataFrame()
                 meta_df = pd.DataFrame(report_meta)
                 if actions.empty:
-                    st.error("No rows were extracted. Check that you uploaded the correct NSW PDFs.")
+                    st.warning("No new rows were saved. " + (" Skipped: " + "; ".join(skipped_files[:8]) if skipped_files else ""))
                 else:
                     save_to_db(actions, breaches, meta_df)
                     st.session_state["latest_actions"] = actions
                     st.session_state["latest_breaches"] = breaches
-                    st.success(f"Processed and saved: {len(actions)} actions and {len(breaches)} breach references for {quarter}.")
+                    quarters_saved = ", ".join(sorted(actions["quarter"].unique().tolist()))
+                    st.success(f"Processed {processed_files} file(s), saved {len(actions)} actions and {len(breaches)} breach references across: {quarters_saved}.")
+                    if skipped_files:
+                        st.info("Skipped: " + "; ".join(skipped_files[:10]))
                     st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
