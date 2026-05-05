@@ -20,6 +20,8 @@ def check_password():
 
 if not check_password():
     st.stop()
+
+
 import io
 import os
 import re
@@ -30,6 +32,7 @@ from typing import Dict, List, Tuple
 
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 try:
     import pdfplumber
@@ -37,7 +40,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v1.7 — Internal Build"
+APP_VERSION = "v1.8 — Internal Build"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -231,6 +234,21 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 .ya-note-card p{margin:0; color:#10242a!important; font-size:13px; line-height:1.35;}
 @media(max-width:900px){.ya-note-grid{grid-template-columns:1fr 1fr}.ya-header{align-items:flex-start}.ya-brand{align-items:flex-start}.ya-logo{width:150px}.ya-title h1{font-size:24px}}
 
+
+/* Multi-select cleanup: removes the odd white dot/pill artefact */
+[data-baseweb="tag"]::before, [data-baseweb="tag"]::after{display:none!important; content:none!important;}
+[data-baseweb="tag"]{padding-left:10px!important; margin-left:0!important;}
+[data-baseweb="tag"] > div:first-child{display:none!important;}
+[data-testid="stMultiSelect"] [data-baseweb="tag"]{background:#357b84!important; border:1px solid #8edfe4!important;}
+
+/* Clean white content panels */
+.ya-white-panel{background:#ffffff; border-radius:22px; padding:18px; box-shadow:0 10px 24px rgba(0,0,0,.14); border:1px solid #b8dce1; margin:12px 0 18px;}
+.ya-white-panel h3,.ya-white-panel h4{color:#00504f!important; margin-top:0;}
+.ya-white-panel p,.ya-white-panel li{color:#10242a!important;}
+
+.ya-provider-title{background:#ffffff; border-radius:24px; padding:24px; box-shadow:0 12px 28px rgba(0,0,0,.16); border-left:8px solid #8edfe4; margin-bottom:18px;}
+.ya-provider-title h1{color:#00504f!important; margin:0 0 6px 0;}
+.ya-provider-title p{color:#10242a!important; margin:0;}
 
 /* Hide Streamlit menu/footer */
 #MainMenu, footer{visibility:hidden;}
@@ -669,6 +687,106 @@ def render_header():
     """, unsafe_allow_html=True)
 
 
+
+def make_action_category_summary(actions: pd.DataFrame, quarter: str = None) -> pd.DataFrame:
+    if actions.empty:
+        return pd.DataFrame(columns=["Category", "Count"])
+    df = actions.copy()
+    if quarter:
+        df = df[df["quarter"].eq(quarter)]
+    if df.empty:
+        return pd.DataFrame(columns=["Category", "Count"])
+    return df.groupby("action_type").size().reset_index(name="Count").rename(columns={"action_type":"Category"}).sort_values("Count", ascending=False)
+
+
+def make_breach_category_summary(breaches: pd.DataFrame, quarter: str = None) -> pd.DataFrame:
+    if breaches.empty:
+        return pd.DataFrame(columns=["Category", "Count"])
+    df = breaches.copy()
+    if quarter:
+        df = df[df["quarter"].eq(quarter)]
+    if df.empty:
+        return pd.DataFrame(columns=["Category", "Count"])
+    return df.groupby("classification").size().reset_index(name="Count").rename(columns={"classification":"Category"}).sort_values("Count", ascending=False)
+
+
+def render_pie(df: pd.DataFrame, title: str):
+    if df.empty or df["Count"].sum() == 0:
+        st.info(f"No data available for {title.lower()}.")
+        return
+    chart = alt.Chart(df).mark_arc(innerRadius=45).encode(
+        theta=alt.Theta(field="Count", type="quantitative"),
+        color=alt.Color(field="Category", type="nominal", legend=alt.Legend(title="Category")),
+        tooltip=[alt.Tooltip("Category:N"), alt.Tooltip("Count:Q")]
+    ).properties(height=330, title=title)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def provider_detail_view(provider: str, actions: pd.DataFrame, breaches: pd.DataFrame, selected_quarters: List[str]):
+    st.button("← Back to dashboard", on_click=lambda: st.session_state.pop("provider_detail", None))
+    a = actions[actions["provider"].eq(provider)].copy()
+    b = breaches[breaches["provider"].eq(provider)].copy() if not breaches.empty else breaches
+    if selected_quarters:
+        a = a[a["quarter"].isin(selected_quarters)]
+        b = b[b["quarter"].isin(selected_quarters)] if not b.empty else b
+
+    st.markdown(f"""
+    <div class='ya-provider-title'>
+      <h1>{provider}</h1>
+      <p>Provider summary across selected quarters: <strong>{', '.join(selected_quarters) if selected_quarters else 'All history'}</strong></p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Actions", f"{len(a):,}")
+    c2.metric("Breach references", f"{len(b):,}")
+    sig = int((b["classification"] == "Significant matter: Law 165/166/167").sum()) if not b.empty else 0
+    c3.metric("L165/166/167", f"{sig:,}")
+    c4.metric("Other", f"{(len(b)-sig):,}")
+
+    st.markdown("<div class='ya-white-panel'><h3>Executive summary</h3>", unsafe_allow_html=True)
+    if a.empty:
+        st.markdown("<p>No enforcement actions found for this provider in the selected period.</p></div>", unsafe_allow_html=True)
+        return
+    top_action = a["action_type"].mode().iloc[0] if not a["action_type"].dropna().empty else "Not available"
+    top_breach = b["breach_code"].mode().iloc[0] if not b.empty and not b["breach_code"].dropna().empty else "No breach references extracted"
+    q_count = a["quarter"].nunique()
+    st.markdown(f"""
+    <p><strong>{provider}</strong> appears in <strong>{len(a):,}</strong> enforcement action row(s) across <strong>{q_count}</strong> selected quarter(s).</p>
+    <p>The most common action category is <strong>{top_action}</strong>. The most common extracted Law/Reg reference is <strong>{top_breach}</strong>.</p>
+    <p>Serious matter references under Law 165/166/167 total <strong>{sig:,}</strong>, with all other extracted Law/Reg references totalling <strong>{(len(b)-sig):,}</strong>.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("### Provider dashboard")
+    p1, p2 = st.columns(2)
+    with p1:
+        render_pie(make_action_category_summary(a), "Actions by category")
+    with p2:
+        render_pie(make_breach_category_summary(b), "Breach references by category")
+
+    st.markdown("### Quarter trend")
+    pq = quarter_summary(a, b)
+    st.dataframe(pq, use_container_width=True, hide_index=True)
+    if not pq.empty:
+        st.line_chart(pq.set_index("quarter")[["Enforcement Actions", "L165/166/167", "Other"]])
+
+    st.markdown("### Action category breakdown")
+    st.dataframe(make_action_category_summary(a), use_container_width=True, hide_index=True)
+
+    st.markdown("### Law/Reg references")
+    st.dataframe(make_law_summary(b), use_container_width=True, hide_index=True)
+
+    st.markdown("### Service/action level detail")
+    display_cols = ["quarter", "report_type", "entity_id", "service_name", "date_issued", "action_type"]
+    st.dataframe(a[display_cols], use_container_width=True, hide_index=True)
+
+    with st.expander("Show raw extracted text excerpts", expanded=False):
+        for _, row in a.head(30).iterrows():
+            st.markdown(f"**{row.get('date_issued','')} — {row.get('service_name','')} — {row.get('action_type','')}**")
+            st.code(str(row.get("raw_text", ""))[:2500])
+
+
 def main():
     check_password()
     init_db()
@@ -687,8 +805,6 @@ def main():
         st.download_button("Download provider mapping CSV", edited_map.to_csv(index=False), "provider_mapping.csv", "text/csv")
 
     provider_rules = df_to_rules(edited_map)
-
-    st.markdown("<span class='ya-pill'>Manual upload</span><span class='ya-pill'>Saved history</span><span class='ya-pill'>Duplicate checks</span><span class='ya-pill'>Standard quarter labels</span><span class='ya-pill'>Excel export</span>", unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -814,6 +930,10 @@ def main():
     show_actions = hist_actions[hist_actions["quarter"].isin(selected_quarters)] if selected_quarters else hist_actions
     show_breaches = hist_breaches[hist_breaches["quarter"].isin(selected_quarters)] if selected_quarters and not hist_breaches.empty else hist_breaches
 
+    if st.session_state.get("provider_detail"):
+        provider_detail_view(st.session_state["provider_detail"], hist_actions, hist_breaches, selected_quarters)
+        return
+
     current_quarter = selected_quarters[0] if selected_quarters else quarters_all[0]
     current_actions = hist_actions[hist_actions["quarter"].eq(current_quarter)]
     current_breaches = hist_breaches[hist_breaches["quarter"].eq(current_quarter)] if not hist_breaches.empty else hist_breaches
@@ -823,6 +943,8 @@ def main():
     law_summary = make_law_summary(show_breaches)
     q_summary = quarter_summary(show_actions, show_breaches)
     action_type_summary = show_actions.groupby(["quarter", "action_type"]).size().reset_index(name="Count").sort_values(["quarter", "Count"], ascending=[True, False])
+    current_action_category = make_action_category_summary(current_actions)
+    current_breach_category = make_breach_category_summary(current_breaches)
 
     st.markdown("## Executive position")
     k1, k2, k3, k4, k5 = st.columns(5)
@@ -840,26 +962,84 @@ def main():
 
     st.markdown(f"<div class='ya-warning'><strong>{ya_position_text(rolling_summary)}</strong></div>", unsafe_allow_html=True)
 
-    tabs = st.tabs(["Current quarter", "Rolling 4-quarter view", "Trend", "Law/Reg breakdown", "Raw extracted rows", "Export"])
+    tabs = st.tabs(["Dashboard", "Current quarter", "Rolling 4-quarter view", "Provider summary", "Trend", "Law/Reg breakdown", "Raw extracted rows", "Export"])
     with tabs[0]:
         st.caption(f"Current selected quarter: {current_quarter}")
-        st.dataframe(current_summary, use_container_width=True, hide_index=True)
+        d1, d2 = st.columns(2)
+        with d1:
+            render_pie(current_action_category, "Current quarter actions by category")
+        with d2:
+            render_pie(current_breach_category, "Current quarter breach references by category")
+        st.markdown("### Current quarter category tables")
+        cta, ctb = st.columns(2)
+        with cta:
+            st.dataframe(current_action_category, use_container_width=True, hide_index=True)
+        with ctb:
+            st.dataframe(current_breach_category, use_container_width=True, hide_index=True)
     with tabs[1]:
-        st.caption("Selected quarters combined. This is the rolling view for board reporting.")
-        st.dataframe(rolling_summary, use_container_width=True, hide_index=True)
-        st.dataframe(action_type_summary, use_container_width=True, hide_index=True)
+        st.caption(f"Current selected quarter: {current_quarter}")
+        st.caption("Click one provider row to open a detailed provider summary with a back button.")
+        try:
+            event = st.dataframe(current_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+            rows = event.selection.rows if hasattr(event, "selection") else []
+            if rows:
+                provider = str(current_summary.iloc[rows[0]]["provider"])
+                st.session_state["provider_detail"] = provider
+                st.rerun()
+        except TypeError:
+            st.dataframe(current_summary, use_container_width=True, hide_index=True)
+            provider = st.selectbox("Open provider summary", [""] + current_summary["provider"].astype(str).tolist())
+            if provider and st.button("Open selected provider"):
+                st.session_state["provider_detail"] = provider
+                st.rerun()
     with tabs[2]:
+        st.caption("Selected quarters combined. This is the rolling view for board reporting. Click one provider row to open a detailed provider summary.")
+        try:
+            event = st.dataframe(rolling_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+            rows = event.selection.rows if hasattr(event, "selection") else []
+            if rows:
+                provider = str(rolling_summary.iloc[rows[0]]["provider"])
+                st.session_state["provider_detail"] = provider
+                st.rerun()
+        except TypeError:
+            st.dataframe(rolling_summary, use_container_width=True, hide_index=True)
+        st.markdown("### Action type summary")
+        st.dataframe(action_type_summary, use_container_width=True, hide_index=True)
+    with tabs[3]:
+        provider_list = rolling_summary["provider"].astype(str).tolist() if not rolling_summary.empty else []
+        selected_provider = st.selectbox("Choose provider", [""] + provider_list)
+        if selected_provider:
+            if st.button("Open provider summary"):
+                st.session_state["provider_detail"] = selected_provider
+                st.rerun()
+            pa = show_actions[show_actions["provider"].eq(selected_provider)]
+            pb = show_breaches[show_breaches["provider"].eq(selected_provider)] if not show_breaches.empty else show_breaches
+            st.markdown("### Quick provider snapshot")
+            snapshot = make_provider_summary(pa, pb)
+            st.dataframe(snapshot, use_container_width=True, hide_index=True)
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                render_pie(make_action_category_summary(pa), "Actions by category")
+            with sc2:
+                render_pie(make_breach_category_summary(pb), "Breach references by category")
+    with tabs[4]:
         st.caption("Quarter-by-quarter historical tracking.")
         st.dataframe(q_summary, use_container_width=True, hide_index=True)
         if not q_summary.empty:
             chart_df = q_summary.set_index("quarter")[["Enforcement Actions", "L165/166/167", "Other"]]
             st.line_chart(chart_df)
-    with tabs[3]:
-        st.dataframe(law_summary, use_container_width=True, hide_index=True)
-    with tabs[4]:
-        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True)
-        st.dataframe(show_breaches, use_container_width=True, hide_index=True)
     with tabs[5]:
+        st.dataframe(law_summary, use_container_width=True, hide_index=True)
+        if not show_breaches.empty:
+            st.markdown("### Serious matters only: Law 165/166/167")
+            sig_only = show_breaches[show_breaches["classification"].eq("Significant matter: Law 165/166/167")]
+            st.dataframe(make_law_summary(sig_only), use_container_width=True, hide_index=True)
+    with tabs[6]:
+        st.markdown("### Extracted enforcement actions")
+        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True)
+        st.markdown("### Extracted breach references")
+        st.dataframe(show_breaches, use_container_width=True, hide_index=True)
+    with tabs[7]:
         sheets = {
             "Current Provider Ranking": current_summary,
             "Rolling Provider Ranking": rolling_summary,
