@@ -18,7 +18,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v2.7 — Polished Upload Review"
+APP_VERSION = "v2.8 — Polished Upload Review"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -301,7 +301,7 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 
 
 
-/* v2.7 compact upload review table */
+/* v2.8 compact upload review table */
 .ya-review-shell{margin:16px 0 12px;}
 .ya-review-intro{
   background:rgba(255,255,255,.14);
@@ -371,7 +371,7 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
   border:1px solid #ffb4ad!important;box-shadow:0 4px 10px rgba(180,35,24,.10)!important;
   font-size:16px!important;
 }
-.ya-review-table .stButton>button:hover{background:#ffe7e5!important;color:#7a130b!important;transform:translateY(-1px)!important;}
+.ya-review-table .stButton>button:hover{background:#ffe7e5!important;color:#7a130b!important;transform:none!important;}
 .ya-removed-note{background:#eaf6f8;color:#00504f!important;border:1px solid #b8dce1;border-radius:16px;padding:12px 14px;font-weight:800;margin:12px 0 18px;}
 /* Stop dropdown/popover from dimming or tinting the page */
 [data-baseweb="modal"], [data-baseweb="modal"] > div, [data-baseweb="layer"], div[role="presentation"]{background:transparent!important;opacity:1!important;filter:none!important;}
@@ -382,6 +382,11 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 [data-baseweb="popover"] li:hover, [role="option"]:hover{background:#eaf6f8!important;color:#00504f!important;}
 .stApp, [data-testid="stAppViewContainer"], .main, .block-container{opacity:1!important;filter:none!important;}
 @media(max-width:1000px){.ya-review-file{font-size:12px}.ya-review-table{padding:8px}.ya-review-header{display:none}}
+
+
+/* Keep app from visually dimming during upload-review interactions */
+[data-testid="stStatusWidget"]{display:none!important;}
+[data-testid="stDecoration"]{display:none!important;}
 
 /* Hide Streamlit menu/footer */
 #MainMenu, footer{visibility:hidden;}
@@ -921,6 +926,13 @@ def _file_row_key(file_name: str) -> str:
     return hashlib.sha1(str(file_name).encode("utf-8")).hexdigest()[:12]
 
 
+def remove_upload_file_from_review(fname: str):
+    """Remove a file from the current upload review using a callback so the row disappears cleanly on the next rerun."""
+    st.session_state.setdefault("upload_removed_files", [])
+    if fname not in st.session_state["upload_removed_files"]:
+        st.session_state["upload_removed_files"].append(fname)
+
+
 def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
     """Compact upload review editor: one row per file, editable quarter/type, trash remove."""
     if review_df is None or review_df.empty:
@@ -993,11 +1005,13 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
         st.markdown(f"<div class='ya-review-row {'last' if i == len(active_df)-1 else ''}'>", unsafe_allow_html=True)
         c0,c1,c2,c3,c4,c5 = st.columns([0.45, 3.2, 1.85, 2.15, .75, 1.9], vertical_alignment="center")
         with c0:
-            if st.button("🗑", key=f"remove_upload_{rk}", help=f"Remove {fname} from this upload"):
-                st.session_state.setdefault("upload_removed_files", [])
-                if fname not in st.session_state["upload_removed_files"]:
-                    st.session_state["upload_removed_files"].append(fname)
-                st.rerun()
+            st.button(
+                "🗑",
+                key=f"remove_upload_{rk}",
+                help=f"Remove {fname} from this upload",
+                on_click=remove_upload_file_from_review,
+                args=(fname,),
+            )
         with c1:
             st.markdown(f"<div class='ya-review-file'>{file_display}</div>", unsafe_allow_html=True)
         with c2:
