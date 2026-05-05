@@ -1305,6 +1305,24 @@ def normalise_provider_stem(service_name: str) -> str:
         name = " ".join(words[:5])
     return name[:70] if name else "Unknown / Needs Mapping"
 
+def clean_provider_name(raw: str) -> str:
+    if not raw:
+        return "Unknown / Needs Mapping"
+    cleaned = re.sub(r"\s+", " ", str(raw)).strip(" -,;:")
+    low = cleaned.lower()
+    bad_bits = [
+        "compliance notice", "due to non-compliance", "national law", "national regulations",
+        "emergency action", "enforceable undertaking", "section 177", "section 179",
+        "provider approval cancelled", "service suspended", "grounds for", "regulatory authority",
+        "law ", "regulation ", "offence to", "offence relating", "continued provision"
+    ]
+    if any(bit in low for bit in bad_bits):
+        return "Unknown / Needs Mapping"
+    if len(cleaned) > 80:
+        return "Unknown / Needs Mapping"
+    return cleaned or "Unknown / Needs Mapping"
+
+
 def infer_provider(text: str, rules: List[Tuple[str, List[str]]]) -> str:
     t = re.sub(r"\s+", " ", text.lower())
     for provider, aliases in rules:
@@ -1313,7 +1331,7 @@ def infer_provider(text: str, rules: List[Tuple[str, List[str]]]) -> str:
                 return provider
     first = text.strip().split("\n")[0]
     first = re.sub(r"\b\d{1,4}[A-Za-z]?\b.*", "", first).strip(" -,")
-    return first[:60] if first else "Unknown / Needs Mapping"
+    return clean_provider_name(first[:80])
 
 
 def detect_action_type(text: str, report_type: str) -> str:
@@ -1828,61 +1846,33 @@ def provider_detail_view(provider: str, actions: pd.DataFrame, breaches: pd.Data
             st.code(str(row.get("raw_text", ""))[:2500])
 
 
-def main():
-    require_login()
-    render_header()
-    logout_button()
 
-    hist_actions, hist_breaches, runs = load_history()
-    all_quarters = sorted_quarter_list(hist_actions)
-
+def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame, runs: pd.DataFrame):
     st.markdown("<div class='ya-section-card'>", unsafe_allow_html=True)
-    st.markdown("<div class='ya-panel-title'>Upload & Controls</div>", unsafe_allow_html=True)
+    st.markdown("<div class='ya-panel-title'>Upload / Delete Files</div>", unsafe_allow_html=True)
+    st.caption("Admin-only area. Upload new quarterly PDFs, replace confirmed duplicates, manage saved history, and maintain provider mapping.")
 
-    if is_admin():
-        st.success("Admin access: upload, replace/delete, and user management enabled.")
-    else:
-        st.info("Read-only access: you can view dashboards and export reports. Uploads/deletions are admin-only.")
+    if not is_admin():
+        st.error("Upload and delete controls are admin-only.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
-    if is_admin():
-        with st.expander("Provider mapping controls", expanded=False):
-            st.caption("Provider mapping groups service names into provider/brand groups. Keep this collapsed unless you need to update or download the mapping file.")
-            uploaded_map = st.file_uploader("Upload provider_mapping.csv", type=["csv"], key="map")
-            map_df = pd.read_csv(uploaded_map) if uploaded_map else rules_to_df()
-            edited_map = st.data_editor(map_df, num_rows="dynamic", use_container_width=True, height=280)
-            st.download_button("Download provider mapping CSV", edited_map.to_csv(index=False), "provider_mapping.csv", "text/csv")
-            suggestions = make_auto_mapping_suggestions(hist_actions, df_to_rules(edited_map))
-            if not suggestions.empty:
-                st.markdown("**Auto-discovered provider groups not in the mapping file**")
-                st.caption("These are fallback provider names found from uploaded reports. Download suggestions and add any valid rows into provider_mapping.csv.")
-                st.dataframe(suggestions, use_container_width=True, hide_index=True, key="mapping_suggestions_inline")
-                st.download_button("Download mapping suggestions", suggestions.to_csv(index=False), "provider_mapping_suggestions.csv", "text/csv", key="mapping_suggestions_inline_download")
-    else:
-        edited_map = rules_to_df()
+    with st.expander("Provider mapping controls", expanded=False):
+        st.caption("Provider mapping groups service names into provider/brand groups. The app also suggests unmapped provider groups from uploaded data.")
+        uploaded_map = st.file_uploader("Upload provider_mapping.csv", type=["csv"], key="map_v35")
+        map_df = pd.read_csv(uploaded_map) if uploaded_map else rules_to_df()
+        edited_map = st.data_editor(map_df, num_rows="dynamic", use_container_width=True, height=280, key="provider_mapping_editor_v35")
+        provider_rules = df_to_rules(edited_map)
+        st.download_button("Download provider mapping CSV", edited_map.to_csv(index=False), "provider_mapping.csv", "text/csv", key="provider_map_download_v35")
+        suggestions = make_auto_mapping_suggestions(hist_actions, provider_rules)
+        if not suggestions.empty:
+            st.markdown("**Unmapped / auto-discovered provider suggestions**")
+            st.caption("Review these and add the valid ones to provider_mapping.csv. This reduces manual clean-up as new centres/providers appear in monthly/quarterly updates.")
+            st.dataframe(suggestions, use_container_width=True, hide_index=True, key="mapping_suggestions_v35")
+            st.download_button("Download mapping suggestions", suggestions.to_csv(index=False), "provider_mapping_suggestions.csv", "text/csv", key="mapping_suggestions_download_v35")
+    provider_rules = df_to_rules(edited_map) if 'edited_map' in locals() else df_to_rules(rules_to_df())
 
-    provider_rules = df_to_rules(edited_map)
-
-    if is_admin():
-        st.markdown("""
-        <div class='ya-note' style='margin-top:8px;'>
-          Drop any NSW quarterly enforcement PDFs here. You can upload one quarter, a partial quarter, or a full year at once. The app will detect the quarter and report type from each PDF header before saving.
-        </div>
-        """, unsafe_allow_html=True)
-
-        upload_nonce = st.session_state.setdefault("upload_widget_nonce", 0)
-        bulk_files = st.file_uploader(
-            "Drop all NSW enforcement PDFs here",
-            type=["pdf"],
-            accept_multiple_files=True,
-            key=f"bulk_pdf_upload_{upload_nonce}",
-            help="Accepts Service Enforcement, Provider Cancellations, Service Cancellations, and Involuntary Suspensions PDFs. Missing reports are allowed.",
-        )
-        if bulk_files:
-            st.session_state.pop("last_upload_success", None)
-    else:
-        bulk_files = []
-
-    if st.session_state.get("last_upload_success") and not bulk_files:
+    if st.session_state.get("last_upload_success"):
         su = st.session_state.get("last_upload_success", {})
         st.markdown(f"""
         <div class='ya-success-panel'>
@@ -1896,13 +1886,30 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
+    st.markdown("""
+    <div class='ya-note' style='margin-top:8px;'>
+      Drop any NSW quarterly enforcement PDFs here. You can upload one quarter, a partial quarter, or a full year at once. The app detects quarter/report type and lets you correct them before saving.
+    </div>
+    """, unsafe_allow_html=True)
+
+    upload_nonce = st.session_state.setdefault("upload_widget_nonce", 0)
+    bulk_files = st.file_uploader(
+        "Drop all NSW enforcement PDFs here",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key=f"bulk_pdf_upload_v35_{upload_nonce}",
+        help="Accepts Service Enforcement, Provider Cancellations, Service Cancellations, and Involuntary Suspensions PDFs. Missing reports are allowed.",
+    )
+    if bulk_files:
+        st.session_state.pop("last_upload_success", None)
+
     review_df = pd.DataFrame()
     file_text_cache = {}
     if bulk_files:
         with st.spinner("Reading PDF headers and checking saved history…"):
             review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
         st.markdown("### Upload review")
-        st.caption("Admin step: fix any unidentified quarter/report type before saving. Use the trash icon to remove a file from this upload. Quarter and report type are dropdowns so the naming convention stays locked.")
+        st.caption("Fix unidentified files before saving. The review is temporary and disappears after processing.")
         active_review_df = render_upload_review_editor(review_df)
         review_df = active_review_df.copy()
 
@@ -1920,17 +1927,17 @@ def main():
             st.markdown(f"""
             <div class='ya-duplicate-panel'>
               <h3>Existing data found</h3>
-              <p>This quarter/report type has already been uploaded. To protect the history, upload is blocked until an admin confirms replacement.</p>
+              <p>This quarter/report type has already been uploaded. Upload is blocked until an admin confirms replacement.</p>
               <ul class='ya-duplicate-list'>{duplicate_items}</ul>
             </div>
             """, unsafe_allow_html=True)
             d1, d2, d3 = st.columns([1.2, 1.0, 3])
             with d1:
-                if st.button("Replace existing data", key="confirm_replace_duplicates", type="primary"):
+                if st.button("Replace existing data", key="confirm_replace_duplicates_v35", type="primary"):
                     st.session_state["replace_duplicates_confirmed"] = True
                     st.success("Replacement confirmed. Click Process uploaded PDFs to continue.")
             with d2:
-                if st.button("Cancel upload", key="cancel_duplicate_upload"):
+                if st.button("Cancel upload", key="cancel_duplicate_upload_v35"):
                     st.session_state["replace_duplicates_confirmed"] = False
                     st.session_state["upload_removed_files"] = []
                     st.session_state["upload_widget_nonce"] = st.session_state.get("upload_widget_nonce", 0) + 1
@@ -1941,55 +1948,44 @@ def main():
         else:
             st.session_state["replace_duplicates_confirmed"] = False
 
-        process_mode = "Replace existing quarter/report type" if st.session_state.get("replace_duplicates_confirmed") else "Process new files only"
-    else:
-        process_mode = "Process new files only"
+    process_mode = "Replace existing quarter/report type" if st.session_state.get("replace_duplicates_confirmed") else "Process new files only"
 
     action_col, history_col = st.columns([1, 1])
     with action_col:
-        process_clicked = st.button("Process uploaded PDFs", key="process_bulk_pdfs", disabled=not is_admin())
+        process_clicked = st.button("Process uploaded PDFs", key="process_bulk_pdfs_v35", type="primary")
     with history_col:
-        with st.expander("History manager", expanded=False):
+        with st.expander("History manager / delete saved data", expanded=False):
             reports_history = load_reports_history()
             st.caption(f"Saved runs: {len(runs)}")
             if not reports_history.empty:
                 st.markdown("**Saved reports by quarter/type**")
-                st.dataframe(reports_history[["quarter", "report_type", "file_name", "actions_count", "breaches_count", "processed_at"]], use_container_width=True, hide_index=True, key="saved_reports_history_table")
-            if is_admin() and not runs.empty:
+                st.dataframe(reports_history[["quarter", "report_type", "file_name", "actions_count", "breaches_count", "processed_at"]], use_container_width=True, hide_index=True, key="saved_reports_history_v35")
+            if not runs.empty:
                 run_labels = [f"{r['quarter']} — {r['processed_at']} — {r['actions_count']} actions" for _, r in runs.iterrows()]
-                selected_delete = st.selectbox("Delete a saved run", [""] + run_labels, key="delete_saved_run_select")
+                selected_delete = st.selectbox("Delete a saved run", [""] + run_labels, key="delete_saved_run_select_v35")
                 if selected_delete:
                     idx = run_labels.index(selected_delete)
                     run_id_to_delete = runs.iloc[idx]["run_id"]
-                    confirm_delete = st.text_input("Type DELETE to confirm", key="confirm_run_delete")
-                    if st.button("Delete selected run", key="delete_selected_run_btn", disabled=(confirm_delete != "DELETE")):
+                    confirm_delete = st.text_input("Type DELETE to confirm", key="confirm_run_delete_v35")
+                    if st.button("Delete selected run", key="delete_selected_run_btn_v35", disabled=(confirm_delete != "DELETE")):
                         show_soft_loading("Please wait. Deleting saved run...")
                         delete_run(run_id_to_delete)
                         st.success("Deleted. Refreshing…")
                         st.rerun()
-            elif not is_admin():
-                st.caption("Delete controls are admin-only.")
             else:
                 st.caption("No saved runs yet.")
 
     if process_clicked:
-        if not is_admin():
-            st.error("Uploads are admin-only.")
-        elif not bulk_files:
+        if not bulk_files:
             st.error("Upload at least one PDF before processing.")
         else:
             if review_df.empty:
                 review_df, file_text_cache = build_upload_review(bulk_files, provider_rules)
-            if not review_df.empty:
-                active_review_df = review_df.copy()
-            else:
-                active_review_df = render_upload_review_editor(review_df)
-            review_df = recalc_upload_review(active_review_df)
-
+            review_df = recalc_upload_review(review_df)
             bad = review_df[review_df["Status"].astype(str).str.startswith("Needs check") | review_df["Status"].astype(str).eq("Duplicate in this upload batch")]
             if not bad.empty:
                 st.error("Some uploaded files could not be safely identified or are duplicated in this batch. Remove/fix those files first.")
-                st.dataframe(bad, use_container_width=True, hide_index=True, key="bulk_bad_files_table")
+                st.dataframe(bad, use_container_width=True, hide_index=True, key="bulk_bad_files_v35")
             elif (review_df["Existing rows"].fillna(0).astype(int) > 0).any() and not st.session_state.get("replace_duplicates_confirmed"):
                 st.error("Existing data found. Confirm 'Replace existing data' first or cancel the upload.")
             else:
@@ -1998,7 +1994,7 @@ def main():
                 all_actions, all_breaches, report_meta = [], [], []
                 processed_files = 0
                 skipped_files = []
-                with st.spinner("Processing bulk upload: extracting rows, classifying breaches, grouping quarters, and saving history…"):
+                with st.spinner("Processing bulk upload…"):
                     files_to_process = {str(x) for x in review_df["File"].tolist()}
                     for f in bulk_files:
                         if f.name not in files_to_process:
@@ -2013,7 +2009,6 @@ def main():
                             continue
                         if existing and process_mode == "Replace existing quarter/report type":
                             delete_report_data(quarter, rtype)
-
                         txt = file_text_cache.get(f.name) or read_pdf_text(f)
                         a, b = parse_pdf(f, quarter, rtype, provider_rules, run_id=run_id, pre_read_text=txt)
                         if a.empty:
@@ -2032,7 +2027,6 @@ def main():
                             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         })
                         processed_files += 1
-
                 actions = pd.concat(all_actions, ignore_index=True) if all_actions else pd.DataFrame()
                 breaches = pd.concat(all_breaches, ignore_index=True) if all_breaches else pd.DataFrame()
                 meta_df = pd.DataFrame(report_meta)
@@ -2040,15 +2034,8 @@ def main():
                     st.warning("No new rows were saved. " + (" Skipped: " + "; ".join(skipped_files[:8]) if skipped_files else ""))
                 else:
                     save_to_db(actions, breaches, meta_df)
-                    st.session_state["latest_actions"] = actions
-                    st.session_state["latest_breaches"] = breaches
                     quarters_saved = ", ".join(sorted(actions["quarter"].unique().tolist()))
-                    st.session_state["last_upload_success"] = {
-                        "quarters": quarters_saved,
-                        "files": processed_files,
-                        "actions": len(actions),
-                        "breaches": len(breaches),
-                    }
+                    st.session_state["last_upload_success"] = {"quarters": quarters_saved, "files": processed_files, "actions": len(actions), "breaches": len(breaches)}
                     st.session_state["replace_duplicates_confirmed"] = False
                     st.session_state["upload_removed_files"] = []
                     st.session_state["upload_widget_nonce"] = st.session_state.get("upload_widget_nonce", 0) + 1
@@ -2056,35 +2043,44 @@ def main():
                     if skipped_files:
                         st.info("Skipped: " + "; ".join(skipped_files[:10]))
                     st.rerun()
-
     st.markdown("</div>", unsafe_allow_html=True)
 
-    hist_actions, hist_breaches, runs = load_history()
-    all_quarters = sorted_quarter_list(hist_actions)
+
+def render_user_details_page():
+    st.markdown("<div class='ya-section-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='ya-panel-title'>User Details</div>", unsafe_allow_html=True)
+    current = st.session_state.get("current_user", {})
+    email = current.get("email", "") if isinstance(current, dict) else ""
+    role = current.get("role", "") if isinstance(current, dict) else ""
+    st.write(f"**Signed in as:** {email or 'Unknown'}")
+    st.write(f"**Role:** {role or ('admin' if is_admin() else 'user')}")
+    if is_admin():
+        st.markdown("---")
+        render_admin_user_manager_panel()
+    else:
+        st.caption("Your account is read-only. Contact an admin if you require upload or deletion access.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame, runs: pd.DataFrame):
     if hist_actions.empty:
-        st.info("Upload PDFs and click Process to start building historical tracking.")
+        st.info("No data has been uploaded yet." + (" Go to Upload/Delete Files to start building history." if is_admin() else " Ask an admin to upload reports."))
         return
 
+    all_quarters = sorted_quarter_list(hist_actions)
     quarters_all = list(dict.fromkeys(hist_actions.sort_values("processed_at", ascending=False)["quarter"].astype(str).tolist()))
 
-    st.markdown("### Quarter controls")
-    qc1, qc2 = st.columns([1, 2])
-    with qc1:
-        current_quarter = st.selectbox(
-            "Current quarter dashboard",
-            quarters_all,
-            index=0,
-            help="Use this to search/view the dashboard one quarter at a time.",
-            key="current_quarter_select",
-        )
-    with qc2:
-        selected_quarters = st.multiselect(
-            "Rolling / comparison quarters",
-            quarters_all,
-            default=quarters_all[:4],
-            help="Default shows the most recent four processed quarters for rolling history.",
-            key="rolling_quarter_multiselect",
-        )
+    st.markdown("### Report controls")
+    selected_quarters = st.multiselect(
+        "Quarters to include in executive position and reports",
+        quarters_all,
+        default=quarters_all[:4],
+        help="Select one, several, or all quarters. Executive position updates dynamically based on this selection.",
+        key="report_quarter_multiselect_v35",
+    )
+    if st.button("Select all uploaded quarters", key="select_all_quarters_v35"):
+        st.session_state["report_quarter_multiselect_v35"] = quarters_all
+        st.rerun()
 
     show_actions = hist_actions[hist_actions["quarter"].isin(selected_quarters)] if selected_quarters else hist_actions
     show_breaches = hist_breaches[hist_breaches["quarter"].isin(selected_quarters)] if selected_quarters and not hist_breaches.empty else hist_breaches
@@ -2093,188 +2089,128 @@ def main():
         provider_detail_view(st.session_state["provider_detail"], hist_actions, hist_breaches, selected_quarters)
         return
 
-    current_actions = hist_actions[hist_actions["quarter"].eq(current_quarter)]
-    current_breaches = hist_breaches[hist_breaches["quarter"].eq(current_quarter)] if not hist_breaches.empty else hist_breaches
-
-    current_summary = make_provider_summary(current_actions, current_breaches)
     rolling_summary = make_provider_summary(show_actions, show_breaches)
     law_summary = make_law_summary(show_breaches)
     q_summary = quarter_summary(show_actions, show_breaches)
-    action_type_summary = show_actions.groupby(["quarter", "action_type"]).size().reset_index(name="Count").sort_values(["quarter", "Count"], ascending=[True, False])
-    current_action_category = make_action_category_summary(current_actions)
-    current_breach_category = make_breach_category_summary(current_breaches)
+    action_type_summary = show_actions.groupby(["quarter", "action_type"]).size().reset_index(name="Count").sort_values(["quarter", "Count"], ascending=[True, False]) if not show_actions.empty else pd.DataFrame()
+    action_category = make_action_category_summary(show_actions)
+    breach_category = make_breach_category_summary(show_breaches)
+    provider_action_category = make_provider_action_category_summary(show_actions)
+    provider_breach_category = make_provider_breach_category_summary(show_breaches)
 
     st.markdown("## Executive position")
+    st.caption("Dynamic based on the selected quarter(s) above.")
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Actions", f"{len(show_actions):,}")
     k2.metric("Breach references", f"{len(show_breaches):,}")
     sig_count = int((show_breaches["classification"] == "Significant matter: Law 165/166/167").sum()) if not show_breaches.empty else 0
     k3.metric("L165/166/167", f"{sig_count:,}")
-    ya_actions = int((show_actions["provider"] == "Young Academics").sum())
+    ya_actions = int((show_actions["provider"] == "Young Academics").sum()) if not show_actions.empty else 0
     k4.metric("YA actions", f"{ya_actions:,}")
     ya_sig = int(((show_breaches["provider"] == "Young Academics") & (show_breaches["classification"] == "Significant matter: Law 165/166/167")).sum()) if not show_breaches.empty else 0
     k5.metric("YA significant", f"{ya_sig:,}")
-
     with st.expander("What do these executive position numbers mean?", expanded=False):
         render_kpi_notes()
-
     st.markdown(f"<div class='ya-warning'><strong>{ya_position_text(rolling_summary)}</strong></div>", unsafe_allow_html=True)
 
-    provider_action_category_current = make_provider_action_category_summary(current_actions)
-    provider_breach_category_current = make_provider_breach_category_summary(current_breaches)
-    provider_qoq = make_provider_qoq_summary(show_actions, show_breaches)
-    action_type_qoq, breach_type_qoq = make_type_qoq_summary(show_actions, show_breaches)
-
-    tab_names = ["Dashboard", "Current quarter", "Rolling 4-quarter view", "All time", "Pivot views", "Provider summary", "Quarter-on-quarter", "Law/Reg breakdown", "Raw extracted rows", "Export"]
-    if is_admin():
-        tab_names.append("Admin users")
+    tab_names = ["Dashboard", "Rolling view", "All time", "Pivot views", "Provider summary", "Law/Reg breakdown", "Raw extracted rows", "Export"]
     tabs = st.tabs(tab_names)
+
     with tabs[0]:
-        st.caption(f"Current selected quarter: {current_quarter}")
-        d1, d2 = st.columns(2)
-        with d1:
-            render_pie(current_action_category, "Current quarter actions by category", key=f"pie_actions_{current_quarter}")
-        with d2:
-            render_pie(current_breach_category, "Current quarter breach references by category", key=f"pie_breaches_{current_quarter}")
-
-        st.markdown("### Current quarter category tables")
-        st.caption("These tables include counts and percentage share for the selected quarter and are included in the Excel export.")
-        cta, ctb = st.columns(2)
-        with cta:
-            st.dataframe(current_action_category, use_container_width=True, hide_index=True, key="current_action_category_table")
-        with ctb:
-            st.dataframe(current_breach_category, use_container_width=True, hide_index=True, key="current_breach_category_table")
-
+        st.caption("Dashboard reflects the selected quarter(s).")
+        render_pie(action_category, "Actions by category", key="pie_actions_selected_v35")
+        render_pie(breach_category, "Breach references by category", key="pie_breaches_selected_v35")
+        st.markdown("### Category tables")
+        st.dataframe(action_category, use_container_width=True, hide_index=True, key="action_category_selected_v35")
+        st.dataframe(breach_category, use_container_width=True, hide_index=True, key="breach_category_selected_v35")
         st.markdown("### Competitor breakdown by category")
-        st.caption("Use this to see which providers are driving each action category and serious/other breach category.")
-        comp1, comp2 = st.columns(2)
-        with comp1:
-            st.markdown("#### Actions by provider/category")
-            st.dataframe(provider_action_category_current, use_container_width=True, hide_index=True, key="provider_action_category_current")
-        with comp2:
-            st.markdown("#### Breaches by provider/category")
-            st.dataframe(provider_breach_category_current, use_container_width=True, hide_index=True, key="provider_breach_category_current")
+        st.caption("Provider/category tables are stacked vertically for readability.")
+        st.markdown("#### Actions by provider/category")
+        st.dataframe(provider_action_category, use_container_width=True, hide_index=True, key="provider_action_category_v35")
+        st.markdown("#### Breaches by provider/category")
+        st.dataframe(provider_breach_category, use_container_width=True, hide_index=True, key="provider_breach_category_v35")
 
     with tabs[1]:
-        st.caption(f"Current selected quarter: {current_quarter}")
-        st.caption("Click one provider row to open a detailed provider summary with a back button.")
+        st.caption("Selected quarters combined. Click one provider row to open a detailed provider summary.")
         try:
-            event = st.dataframe(current_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="current_summary_selectable")
-            rows = event.selection.rows if hasattr(event, "selection") else []
-            if rows:
-                provider = str(current_summary.iloc[rows[0]]["provider"])
-                st.session_state["provider_detail"] = provider
-                st.rerun()
-        except TypeError:
-            st.dataframe(current_summary, use_container_width=True, hide_index=True, key="current_summary_fallback")
-            provider = st.selectbox("Open provider summary", [""] + current_summary["provider"].astype(str).tolist(), key="current_provider_open_select")
-            if provider and st.button("Open selected provider", key="current_provider_open_btn"):
-                st.session_state["provider_detail"] = provider
-                st.rerun()
-
-    with tabs[2]:
-        st.caption("Selected quarters combined. This is the rolling view for board reporting. Click one provider row to open a detailed provider summary.")
-        try:
-            event = st.dataframe(rolling_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="rolling_summary_selectable")
+            event = st.dataframe(rolling_summary, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="rolling_summary_selectable_v35")
             rows = event.selection.rows if hasattr(event, "selection") else []
             if rows:
                 provider = str(rolling_summary.iloc[rows[0]]["provider"])
                 st.session_state["provider_detail"] = provider
                 st.rerun()
         except TypeError:
-            st.dataframe(rolling_summary, use_container_width=True, hide_index=True, key="rolling_summary_fallback")
+            st.dataframe(rolling_summary, use_container_width=True, hide_index=True, key="rolling_summary_fallback_v35")
         st.markdown("### Action type summary")
-        st.dataframe(action_type_summary, use_container_width=True, hide_index=True, key="rolling_action_type_summary")
+        st.dataframe(action_type_summary, use_container_width=True, hide_index=True, key="rolling_action_type_summary_v35")
 
-    with tabs[3]:
-        st.caption("All uploaded history combined. This ignores the rolling quarter selection and shows the true all-time position.")
+    with tabs[2]:
+        st.caption("All uploaded history combined. This ignores quarter selection and shows the true all-time position.")
         all_time_summary = make_provider_summary(hist_actions, hist_breaches)
         st.markdown("### All-time provider ranking")
-        st.dataframe(all_time_summary, use_container_width=True, hide_index=True, key="all_time_provider_ranking")
+        st.dataframe(all_time_summary, use_container_width=True, hide_index=True, key="all_time_provider_ranking_v35")
         st.markdown("### All-time action categories")
-        st.dataframe(make_action_category_summary(hist_actions), use_container_width=True, hide_index=True, key="all_time_action_categories")
+        st.dataframe(make_action_category_summary(hist_actions), use_container_width=True, hide_index=True, key="all_time_action_categories_v35")
         st.markdown("### All-time breach categories")
-        st.dataframe(make_breach_category_summary(hist_breaches), use_container_width=True, hide_index=True, key="all_time_breach_categories")
+        st.dataframe(make_breach_category_summary(hist_breaches), use_container_width=True, hide_index=True, key="all_time_breach_categories_v35")
+
+    with tabs[3]:
+        st.caption("Pivot view: providers/issues down the page and quarters running left-to-right in proper financial-year order.")
+        pivot_metric = st.selectbox("Pivot metric", ["Actions", "Total breaches", "Significant matters", "Other breaches"], key="pivot_metric_select_v35")
+        st.markdown("### Provider by quarter pivot")
+        st.dataframe(make_provider_pivot(hist_actions, hist_breaches, pivot_metric, all_quarters), use_container_width=True, hide_index=True, key="provider_quarter_pivot_v35")
+        st.markdown("### Action type by quarter pivot")
+        st.dataframe(make_action_type_pivot(hist_actions, all_quarters), use_container_width=True, hide_index=True, key="action_type_quarter_pivot_v35")
+        st.markdown("### Law/Reg by quarter pivot")
+        st.dataframe(make_issue_pivot(hist_breaches, "breach_code", all_quarters), use_container_width=True, hide_index=True, key="law_reg_quarter_pivot_v35")
+        st.markdown("### Category by quarter pivot")
+        st.dataframe(make_issue_pivot(hist_breaches, "classification", all_quarters), use_container_width=True, hide_index=True, key="breach_category_quarter_pivot_v35")
 
     with tabs[4]:
-        st.caption("Pivot view: providers/issues down the page and quarters running left-to-right in proper financial-year order.")
-        pivot_metric = st.selectbox("Pivot metric", ["Actions", "Total breaches", "Significant matters", "Other breaches"], key="pivot_metric_select")
-        st.markdown("### Provider by quarter pivot")
-        st.dataframe(make_provider_pivot(hist_actions, hist_breaches, pivot_metric, all_quarters), use_container_width=True, hide_index=True, key="provider_quarter_pivot")
-        st.markdown("### Action type by quarter pivot")
-        st.dataframe(make_action_type_pivot(hist_actions, all_quarters), use_container_width=True, hide_index=True, key="action_type_quarter_pivot")
-        st.markdown("### Law/Reg by quarter pivot")
-        st.dataframe(make_issue_pivot(hist_breaches, "breach_code", all_quarters), use_container_width=True, hide_index=True, key="law_reg_quarter_pivot")
-        st.markdown("### Category by quarter pivot")
-        st.dataframe(make_issue_pivot(hist_breaches, "classification", all_quarters), use_container_width=True, hide_index=True, key="breach_category_quarter_pivot")
-
-    with tabs[5]:
         provider_list = rolling_summary["provider"].astype(str).tolist() if not rolling_summary.empty else []
-        selected_provider = st.selectbox("Choose provider", [""] + provider_list, key="provider_summary_select")
+        selected_provider = st.selectbox("Choose provider", [""] + provider_list, key="provider_summary_select_v35")
         if selected_provider:
-            if st.button("Open provider summary", key="open_provider_summary_button"):
+            if st.button("Open provider summary", key="open_provider_summary_button_v35"):
                 st.session_state["provider_detail"] = selected_provider
                 st.rerun()
             pa = show_actions[show_actions["provider"].eq(selected_provider)]
             pb = show_breaches[show_breaches["provider"].eq(selected_provider)] if not show_breaches.empty else show_breaches
             st.markdown("### Quick provider snapshot")
-            snapshot = make_provider_summary(pa, pb)
-            st.dataframe(snapshot, use_container_width=True, hide_index=True, key="provider_snapshot_table")
-            sc1, sc2 = st.columns(2)
-            with sc1:
-                render_pie(make_action_category_summary(pa), "Actions by category", key=f"provider_tab_actions_{selected_provider}")
-            with sc2:
-                render_pie(make_breach_category_summary(pb), "Breach references by category", key=f"provider_tab_breaches_{selected_provider}")
+            st.dataframe(make_provider_summary(pa, pb), use_container_width=True, hide_index=True, key="provider_snapshot_v35")
+            render_pie(make_action_category_summary(pa), "Actions by category", key=f"provider_actions_v35_{selected_provider}")
+            render_pie(make_breach_category_summary(pb), "Breach references by category", key=f"provider_breaches_v35_{selected_provider}")
 
-    with tabs[6]:
-        st.caption("Quarter-on-quarter stats by competitor and issue/action type. Use Pivot views for the cleaner board/reporting view.")
-        st.markdown("### Provider quarter-on-quarter movement")
-        st.dataframe(provider_qoq, use_container_width=True, hide_index=True, key="provider_qoq_table")
-        st.markdown("### Action type quarter-on-quarter by provider")
-        st.dataframe(action_type_qoq, use_container_width=True, hide_index=True, key="action_type_qoq_table")
-        st.markdown("### Breach category quarter-on-quarter by provider")
-        st.dataframe(breach_type_qoq, use_container_width=True, hide_index=True, key="breach_type_qoq_table")
-        st.markdown("### Overall quarter trend")
-        st.dataframe(q_summary, use_container_width=True, hide_index=True, key="quarter_summary_table")
-        if not q_summary.empty:
-            chart_df = q_summary.set_index("quarter")[["Enforcement Actions", "L165/166/167", "Other"]]
-            st.line_chart(chart_df)
-
-    with tabs[7]:
-        st.dataframe(law_summary, use_container_width=True, hide_index=True, key="law_summary_table")
+    with tabs[5]:
+        st.dataframe(law_summary, use_container_width=True, hide_index=True, key="law_summary_v35")
         if not show_breaches.empty:
             st.markdown("### Serious matters only: Law 165/166/167")
             sig_only = show_breaches[show_breaches["classification"].eq("Significant matter: Law 165/166/167")]
-            st.dataframe(make_law_summary(sig_only), use_container_width=True, hide_index=True, key="serious_law_summary_table")
+            st.dataframe(make_law_summary(sig_only), use_container_width=True, hide_index=True, key="serious_law_summary_v35")
 
-    with tabs[8]:
+    with tabs[6]:
         st.markdown("### Extracted enforcement actions")
-        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True, key="raw_actions_table")
+        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True, key="raw_actions_v35")
         st.markdown("### Extracted breach references")
-        st.dataframe(show_breaches, use_container_width=True, hide_index=True, key="raw_breaches_table")
+        st.dataframe(show_breaches, use_container_width=True, hide_index=True, key="raw_breaches_v35")
 
-    with tabs[9]:
+    with tabs[7]:
         all_time_summary = make_provider_summary(hist_actions, hist_breaches)
         provider_pivot_actions = make_provider_pivot(hist_actions, hist_breaches, "Actions", all_quarters)
         provider_pivot_breaches = make_provider_pivot(hist_actions, hist_breaches, "Total breaches", all_quarters)
         law_reg_pivot = make_issue_pivot(hist_breaches, "breach_code", all_quarters)
         action_type_pivot = make_action_type_pivot(hist_actions, all_quarters)
-        mapping_suggestions = make_auto_mapping_suggestions(hist_actions, provider_rules)
+        mapping_suggestions = make_auto_mapping_suggestions(hist_actions, df_to_rules(rules_to_df()))
         sheets = {
-            "Current Provider Ranking": current_summary,
-            "Rolling Provider Ranking": rolling_summary,
+            "Selected Provider Ranking": rolling_summary,
             "All Time Provider Ranking": all_time_summary,
             "Provider Pivot Actions": provider_pivot_actions,
             "Provider Pivot Breaches": provider_pivot_breaches,
             "Action Type Pivot": action_type_pivot,
             "Law Reg Pivot": law_reg_pivot,
-            "Current Action Categories": current_action_category,
-            "Current Breach Categories": current_breach_category,
-            "Provider Action Categories": provider_action_category_current,
-            "Provider Breach Categories": provider_breach_category_current,
-            "Provider QoQ": provider_qoq,
-            "Action Type QoQ": action_type_qoq,
-            "Breach Category QoQ": breach_type_qoq,
+            "Selected Action Categories": action_category,
+            "Selected Breach Categories": breach_category,
+            "Provider Action Categories": provider_action_category,
+            "Provider Breach Categories": provider_breach_category,
             "Quarter Trend": q_summary,
             "Law Reg Breakdown": law_summary,
             "Action Type Summary": action_type_summary,
@@ -2285,17 +2221,38 @@ def main():
             "Uploaded Reports": load_reports_history(),
         }
         xlsx = to_excel_bytes(sheets)
-        st.download_button("Download Excel report", xlsx, "YA_Compliance_Benchmark_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_report")
-        st.download_button("Download full history database", open(DB_PATH, "rb").read(), "compliance_history.sqlite3", "application/octet-stream", key="download_history_db")
+        st.download_button("Download Excel report", xlsx, "YA_Compliance_Benchmark_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_report_v35")
+        st.download_button("Download full history database", open(DB_PATH, "rb").read(), "compliance_history.sqlite3", "application/octet-stream", key="download_history_db_v35")
         if not mapping_suggestions.empty:
-            st.download_button("Download provider mapping suggestions", mapping_suggestions.to_csv(index=False), "provider_mapping_suggestions.csv", "text/csv", key="download_mapping_suggestions")
+            st.download_button("Download provider mapping suggestions", mapping_suggestions.to_csv(index=False), "provider_mapping_suggestions.csv", "text/csv", key="download_mapping_suggestions_v35")
+
+
+def main():
+    require_login()
+    render_header()
+    logout_button()
+
+    hist_actions, hist_breaches, runs = load_history()
 
     if is_admin():
-        with tabs[10]:
-            render_admin_user_manager_panel()
+        page_names = ["Reports", "Upload/Delete Files", "User Details"]
+    else:
+        page_names = ["Reports", "User Details"]
+    page_tabs = st.tabs(page_names)
+
+    with page_tabs[0]:
+        render_reports_page(hist_actions, hist_breaches, runs)
+
+    if is_admin():
+        with page_tabs[1]:
+            render_upload_delete_page(hist_actions, hist_breaches, runs)
+        with page_tabs[2]:
+            render_user_details_page()
+    else:
+        with page_tabs[1]:
+            render_user_details_page()
 
     st.caption("Internal use only. Review provider mapping before board or Commission reporting, as NSW PDFs often list service names rather than provider groups.")
-
 
 if __name__ == "__main__":
     main()
