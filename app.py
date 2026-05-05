@@ -18,7 +18,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v2.8 — Polished Upload Review"
+APP_VERSION = "v2.9 — Less Streamlit UI"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -390,6 +390,35 @@ input, textarea, select{border-radius:12px!important; color:#10242a!important; b
 
 /* Hide Streamlit menu/footer */
 #MainMenu, footer{visibility:hidden;}
+
+/* v2.9 less-Streamlit polish */
+#MainMenu, footer, header [data-testid="stToolbar"], [data-testid="stDeployButton"]{visibility:hidden!important; height:0!important;}
+[data-testid="stStatusWidget"]{display:none!important;}
+.ya-review-table-stable{padding:14px 16px!important; background:rgba(255,255,255,.98)!important;}
+.ya-review-table-stable .ya-review-header{border-radius:14px;background:#eef7f8;color:#00504f!important;padding:10px 12px!important;white-space:nowrap;}
+.ya-review-table-stable .ya-review-row{padding:9px 0!important;border-bottom:1px solid #d9eaed!important;}
+.ya-review-table-stable .ya-review-file{display:flex;align-items:center;gap:10px;color:#10242a!important;font-size:13px!important;font-weight:850!important;padding-top:0!important;min-height:42px;}
+.ya-file-icon{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:34px;border-radius:10px;background:#eaf6f8;color:#00504f!important;border:1px solid #b8dce1;font-size:11px;font-weight:950;letter-spacing:.04em;}
+.ya-review-table-stable [data-baseweb="select"]{height:42px!important;min-height:42px!important;background:#f8fbfc!important;border:1px solid #c9dfe3!important;border-radius:12px!important;box-shadow:none!important;}
+.ya-review-table-stable [data-baseweb="select"] > div{height:42px!important;min-height:42px!important;align-items:center!important;}
+.ya-review-table-stable [data-baseweb="select"] *{color:#10242a!important;font-size:13px!important;font-weight:700!important;}
+.ya-review-existing{min-height:42px;display:flex;align-items:center;color:#10242a!important;font-weight:850!important;padding-top:0!important;}
+.ya-review-status-text{min-height:42px;display:flex;align-items:center;padding-top:0!important;font-size:12px!important;line-height:1.2!important;}
+.ya-review-status-text.ready{color:#027a48!important;}
+.ya-review-status-text.check{color:#936300!important;}
+.ya-review-status-text.duplicate{color:#b42318!important;}
+.ya-form-hint{color:#dff7f9!important;font-size:12px;font-weight:700;padding-top:12px;}
+/* Make submit buttons read as app controls */
+button[kind="primaryFormSubmit"], button[kind="secondaryFormSubmit"]{border-radius:999px!important;font-weight:900!important;}
+button[kind="primaryFormSubmit"]{background:#8edfe4!important;color:#00393c!important;border:0!important;box-shadow:0 5px 0 #1d6d75,0 10px 18px rgba(0,0,0,.18)!important;}
+button[kind="secondaryFormSubmit"]{background:#ffffff!important;color:#00504f!important;border:1px solid #b8dce1!important;box-shadow:0 6px 14px rgba(0,0,0,.12)!important;}
+/* Stop BaseWeb dropdown overlay/backdrop from visually tinting the page */
+[data-baseweb="layer"], [data-baseweb="layer"] > div{background:transparent!important;opacity:1!important;filter:none!important;}
+[data-baseweb="popover"]{background:transparent!important;opacity:1!important;filter:none!important;z-index:2147483647!important;}
+[data-baseweb="popover"] [role="listbox"], [data-baseweb="menu"]{background:#ffffff!important;border:1px solid #c9dfe3!important;box-shadow:0 18px 34px rgba(0,0,0,.20)!important;border-radius:14px!important;overflow:auto!important;max-height:340px!important;}
+[data-baseweb="popover"] [role="option"], [data-baseweb="menu"] li{background:#ffffff!important;color:#10242a!important;}
+[data-baseweb="popover"] [role="option"]:hover, [data-baseweb="menu"] li:hover{background:#eaf6f8!important;color:#00504f!important;}
+
 </style>
 """
 st.markdown(YA_CSS, unsafe_allow_html=True)
@@ -934,7 +963,7 @@ def remove_upload_file_from_review(fname: str):
 
 
 def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
-    """Compact upload review editor: one row per file, editable quarter/type, trash remove."""
+    """Stable upload review editor: one compact table, changes applied in one submit to avoid Streamlit flicker."""
     if review_df is None or review_df.empty:
         return pd.DataFrame()
 
@@ -946,104 +975,141 @@ def render_upload_review_editor(review_df: pd.DataFrame) -> pd.DataFrame:
             rk = _file_row_key(f)
             st.session_state.pop(f"review_quarter_{rk}", None)
             st.session_state.pop(f"review_type_{rk}", None)
+            st.session_state.pop(f"review_action_{rk}", None)
 
     removed = set(st.session_state.get("upload_removed_files", []))
 
+    # Initialise row state from auto-detection.
     for _, row in review_df.iterrows():
         fname = str(row["File"])
         rk = _file_row_key(fname)
         q_key = f"review_quarter_{rk}"
         t_key = f"review_type_{rk}"
+        a_key = f"review_action_{rk}"
         if q_key not in st.session_state:
             q_val = str(row.get("Detected quarter", "— Select quarter —"))
             st.session_state[q_key] = q_val if q_val in quarter_options() else "— Select quarter —"
         if t_key not in st.session_state:
             t_val = str(row.get("Detected report type", "— Select report type —"))
             st.session_state[t_key] = t_val if t_val in REPORT_TYPE_OPTIONS else "— Select report type —"
+        if a_key not in st.session_state:
+            st.session_state[a_key] = "Keep"
 
-    rows = []
-    for _, row in review_df.iterrows():
-        fname = str(row["File"])
-        if fname in removed:
-            continue
-        rk = _file_row_key(fname)
-        rows.append({
-            "File": fname,
-            "Detected quarter": st.session_state.get(f"review_quarter_{rk}", "— Select quarter —"),
-            "Detected report type": st.session_state.get(f"review_type_{rk}", "— Select report type —"),
-            "Existing rows": int(row.get("Existing rows", 0) or 0),
-            "Status": str(row.get("Status", "")),
-        })
-    active_df = recalc_upload_review(pd.DataFrame(rows)) if rows else pd.DataFrame(columns=["File","Detected quarter","Detected report type","Existing rows","Status"])
+    def build_active_df() -> pd.DataFrame:
+        rows = []
+        for _, r in review_df.iterrows():
+            fname = str(r["File"])
+            if fname in set(st.session_state.get("upload_removed_files", [])):
+                continue
+            rk = _file_row_key(fname)
+            rows.append({
+                "File": fname,
+                "Detected quarter": st.session_state.get(f"review_quarter_{rk}", "— Select quarter —"),
+                "Detected report type": st.session_state.get(f"review_type_{rk}", "— Select report type —"),
+                "Existing rows": int(r.get("Existing rows", 0) or 0),
+                "Status": str(r.get("Status", "")),
+            })
+        if not rows:
+            return pd.DataFrame(columns=["File","Detected quarter","Detected report type","Existing rows","Status"])
+        return recalc_upload_review(pd.DataFrame(rows))
+
+    active_df = build_active_df()
 
     st.markdown("""
-    <div class='ya-review-shell'>
+    <div class='ya-review-shell ya-less-streamlit'>
       <div class='ya-review-intro'>
         <div class='ya-review-eyebrow'>Upload review</div>
-        <div class='ya-review-copy'>Confirm the quarter and report type before processing. Each file stays on one row. Use the trash icon to remove anything that should not be included.</div>
+        <div class='ya-review-copy'>Confirm the quarter and report type before processing. This editor applies changes in one action so the page does not flicker or drop into the teal overlay while you work.</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div class='ya-review-table'>", unsafe_allow_html=True)
-    h0,h1,h2,h3,h4,h5 = st.columns([0.45, 3.2, 1.85, 2.15, .75, 1.9], vertical_alignment="center")
-    with h0: st.markdown("<div class='ya-review-header'>&nbsp;</div>", unsafe_allow_html=True)
-    with h1: st.markdown("<div class='ya-review-header'>File</div>", unsafe_allow_html=True)
-    with h2: st.markdown("<div class='ya-review-header'>Quarter</div>", unsafe_allow_html=True)
-    with h3: st.markdown("<div class='ya-review-header'>Report type</div>", unsafe_allow_html=True)
-    with h4: st.markdown("<div class='ya-review-header'>Existing</div>", unsafe_allow_html=True)
-    with h5: st.markdown("<div class='ya-review-header'>Status</div>", unsafe_allow_html=True)
+    # Form = select/dropdown changes do not cause immediate reruns. Much closer to a real web-app workflow.
+    with st.form("upload_review_stable_form", clear_on_submit=False):
+        st.markdown("<div class='ya-review-table ya-review-table-stable'>", unsafe_allow_html=True)
+        h1,h2,h3,h4,h5,h6 = st.columns([3.65, 1.95, 2.15, .72, 1.7, .95], vertical_alignment="center")
+        with h1: st.markdown("<div class='ya-review-header'>File</div>", unsafe_allow_html=True)
+        with h2: st.markdown("<div class='ya-review-header'>Quarter</div>", unsafe_allow_html=True)
+        with h3: st.markdown("<div class='ya-review-header'>Report type</div>", unsafe_allow_html=True)
+        with h4: st.markdown("<div class='ya-review-header'>Existing</div>", unsafe_allow_html=True)
+        with h5: st.markdown("<div class='ya-review-header'>Status</div>", unsafe_allow_html=True)
+        with h6: st.markdown("<div class='ya-review-header'>Action</div>", unsafe_allow_html=True)
 
-    for i, row in active_df.iterrows():
-        fname = str(row["File"])
-        rk = _file_row_key(fname)
-        status = str(row.get("Status", ""))
-        existing = int(row.get("Existing rows", 0) or 0)
-        status_class = "ready" if status.lower() == "ready" else ("duplicate" if existing or "Duplicate" in status else "check")
-        file_display = fname if len(fname) <= 82 else fname[:48] + "…" + fname[-26:]
+        for i, row in active_df.iterrows():
+            fname = str(row["File"])
+            rk = _file_row_key(fname)
+            status = str(row.get("Status", ""))
+            existing = int(row.get("Existing rows", 0) or 0)
+            status_class = "ready" if status.lower() == "ready" else ("duplicate" if existing or "Duplicate" in status else "check")
+            file_display = fname if len(fname) <= 72 else fname[:42] + "…" + fname[-24:]
 
-        st.markdown(f"<div class='ya-review-row {'last' if i == len(active_df)-1 else ''}'>", unsafe_allow_html=True)
-        c0,c1,c2,c3,c4,c5 = st.columns([0.45, 3.2, 1.85, 2.15, .75, 1.9], vertical_alignment="center")
-        with c0:
-            st.button(
-                "🗑",
-                key=f"remove_upload_{rk}",
-                help=f"Remove {fname} from this upload",
-                on_click=remove_upload_file_from_review,
-                args=(fname,),
-            )
-        with c1:
-            st.markdown(f"<div class='ya-review-file'>{file_display}</div>", unsafe_allow_html=True)
-        with c2:
-            current_q = st.session_state.get(f"review_quarter_{rk}", "— Select quarter —")
-            q_opts = quarter_options()
-            st.selectbox(
-                "Quarter",
-                q_opts,
-                index=q_opts.index(current_q) if current_q in q_opts else 0,
-                key=f"review_quarter_{rk}",
-                label_visibility="collapsed",
-            )
-        with c3:
-            current_t = st.session_state.get(f"review_type_{rk}", "— Select report type —")
-            st.selectbox(
-                "Report type",
-                REPORT_TYPE_OPTIONS,
-                index=REPORT_TYPE_OPTIONS.index(current_t) if current_t in REPORT_TYPE_OPTIONS else 0,
-                key=f"review_type_{rk}",
-                label_visibility="collapsed",
-            )
-        with c4:
-            st.markdown(f"<div class='ya-review-existing'>{existing}</div>", unsafe_allow_html=True)
-        with c5:
-            st.markdown(f"<div class='ya-review-status-text {status_class}'>{status}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='ya-review-row {'last' if i == len(active_df)-1 else ''}'>", unsafe_allow_html=True)
+            c1,c2,c3,c4,c5,c6 = st.columns([3.65, 1.95, 2.15, .72, 1.7, .95], vertical_alignment="center")
+            with c1:
+                st.markdown(f"<div class='ya-review-file' title='{fname}'><span class='ya-file-icon'>PDF</span>{file_display}</div>", unsafe_allow_html=True)
+            with c2:
+                current_q = st.session_state.get(f"review_quarter_{rk}", "— Select quarter —")
+                q_opts = quarter_options()
+                st.selectbox(
+                    "Quarter",
+                    q_opts,
+                    index=q_opts.index(current_q) if current_q in q_opts else 0,
+                    key=f"review_quarter_{rk}",
+                    label_visibility="collapsed",
+                )
+            with c3:
+                current_t = st.session_state.get(f"review_type_{rk}", "— Select report type —")
+                st.selectbox(
+                    "Report type",
+                    REPORT_TYPE_OPTIONS,
+                    index=REPORT_TYPE_OPTIONS.index(current_t) if current_t in REPORT_TYPE_OPTIONS else 0,
+                    key=f"review_type_{rk}",
+                    label_visibility="collapsed",
+                )
+            with c4:
+                st.markdown(f"<div class='ya-review-existing'>{existing}</div>", unsafe_allow_html=True)
+            with c5:
+                st.markdown(f"<div class='ya-review-status-text {status_class}'>{status}</div>", unsafe_allow_html=True)
+            with c6:
+                st.selectbox(
+                    "Action",
+                    ["Keep", "🗑 Remove"],
+                    index=0,
+                    key=f"review_action_{rk}",
+                    label_visibility="collapsed",
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    if removed:
-        st.markdown(f"<div class='ya-removed-note'>{len(removed)} file(s) removed from this upload consideration.</div>", unsafe_allow_html=True)
-    return active_df
+        f1, f2, f3 = st.columns([1.1, 1.1, 4])
+        with f1:
+            apply_clicked = st.form_submit_button("Apply review changes", type="primary")
+        with f2:
+            reset_removed_clicked = st.form_submit_button("Reset removed files")
+        with f3:
+            st.markdown("<div class='ya-form-hint'>Select 🗑 Remove beside a file, then click Apply. Dropdowns will not refresh the page until you apply changes.</div>", unsafe_allow_html=True)
 
+    if apply_clicked:
+        new_removed = set(st.session_state.get("upload_removed_files", []))
+        for _, r in review_df.iterrows():
+            fname = str(r["File"])
+            rk = _file_row_key(fname)
+            if st.session_state.get(f"review_action_{rk}") == "🗑 Remove":
+                new_removed.add(fname)
+                st.session_state[f"review_action_{rk}"] = "Keep"
+        st.session_state["upload_removed_files"] = sorted(new_removed)
+        with st.spinner("Please wait. Updating upload review..."):
+            st.rerun()
+
+    if reset_removed_clicked:
+        st.session_state["upload_removed_files"] = []
+        with st.spinner("Please wait. Restoring files..."):
+            st.rerun()
+
+    if st.session_state.get("upload_removed_files"):
+        st.markdown(f"<div class='ya-removed-note'>{len(st.session_state['upload_removed_files'])} file(s) removed from this upload consideration. Use Reset removed files to bring them back.</div>", unsafe_allow_html=True)
+
+    return build_active_df()
 
 def render_kpi_notes():
     st.markdown("""
