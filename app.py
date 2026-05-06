@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v4.0 — Lookup validation + PDF service refresh"
+APP_VERSION = "v3.9 — Restored + table extraction fix"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -114,35 +114,8 @@ DEFAULT_PROVIDER_RULES = [
 
 LAW_RE = re.compile(r"\b(?:Law\s*)?(165|166|167|161A|162A|\d{2,3}[A-Z]?)\s*(?:\([^\)]*\))?", re.I)
 REG_RE = re.compile(r"\bRegulation\s*(\d{2,3}[A-Z]*(?:AAC|AA|A|B|C|D)?)\s*(?:\([^\)]*\))?", re.I)
-ID_RE = re.compile(r"\b((?:SE|PR)[- ]?\d{8})\b", re.I)
+ID_RE = re.compile(r"\b((?:SE|PR)-\d{8})\b")
 DATE_RE = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")
-
-
-def normalise_entity_id(value: str) -> str:
-    """Normalise NSW service/provider IDs across PDF text and ACECQA uploads.
-
-    Handles: entity id, entity_ID, ServiceApprovalNumber, Service ID, SE00007735,
-    SE-00007735, 00007735, lower-case, spaces, and Excel numeric-looking values.
-    """
-    if value is None:
-        return ""
-    txt = str(value).strip().upper()
-    if not txt or txt in {"NAN", "NONE", "NULL"}:
-        return ""
-    txt = txt.replace("\u00a0", " ")
-    txt = re.sub(r"\s+", "", txt)
-    m = re.search(r"\b(PR|SE)[- ]?(\d{1,8})\b", txt, flags=re.I)
-    if m:
-        return f"{m.group(1).upper()}-{m.group(2).zfill(8)}"
-    digits = re.sub(r"\D", "", txt)
-    if digits:
-        # Default bare 8 digit IDs to service IDs because mapping gaps are service rows.
-        return f"SE-{digits[-8:].zfill(8)}"
-    return txt
-
-
-def is_valid_entity_id(value: str) -> bool:
-    return bool(re.match(r"^(SE|PR)-\d{8}$", str(value or "")))
 
 st.set_page_config(page_title=APP_TITLE, page_icon="🔒", layout="wide")
 
@@ -904,34 +877,47 @@ def init_db(create_defaults: bool = False):
 
 
 def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame, report_meta: pd.DataFrame = None, uploaded_by: str = ""):
+    """Save processed rows. Supports one run_id per uploaded file so files can be deleted individually."""
     con = sqlite3.connect(DB_PATH)
     processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    uploaded_by = uploaded_by or current_user_email()
+
     if not actions.empty:
         actions = actions.copy()
         if "processed_at" not in actions.columns:
             actions["processed_at"] = processed_at
         if "uploaded_by" not in actions.columns:
-            actions["uploaded_by"] = uploaded_by or current_user_email()
+            actions["uploaded_by"] = uploaded_by
         actions.to_sql("actions", con, if_exists="append", index=False)
+
     if not breaches.empty:
         breaches = breaches.copy()
         if "processed_at" not in breaches.columns:
             breaches["processed_at"] = processed_at
         breaches.to_sql("breaches", con, if_exists="append", index=False)
+
+    # Store one run row per run_id so admin deletion can be file-specific.
     if not actions.empty:
-        run_id = str(actions["run_id"].iloc[0])
-        quarters = sorted([str(q) for q in actions["quarter"].dropna().unique().tolist()])
-        quarter = quarters[0] if len(quarters) == 1 else f"Bulk upload — {len(quarters)} quarters"
-        con.execute("INSERT OR REPLACE INTO runs(run_id, quarter, processed_at, actions_count, breaches_count, notes, uploaded_by) VALUES (?,?,?,?,?,?,?)", (run_id, quarter, processed_at, len(actions), len(breaches), "", uploaded_by or current_user_email()))
+        for rid, grp in actions.groupby("run_id", dropna=False):
+            rid = str(rid)
+            q_label = ", ".join(sorted([str(q) for q in grp["quarter"].dropna().unique().tolist()]))
+            b_count = 0
+            if not breaches.empty and "run_id" in breaches.columns:
+                b_count = int((breaches["run_id"].astype(str) == rid).sum())
+            con.execute(
+                "INSERT OR REPLACE INTO runs(run_id, quarter, processed_at, actions_count, breaches_count, notes, uploaded_by) VALUES (?,?,?,?,?,?,?)",
+                (rid, q_label, processed_at, int(len(grp)), b_count, "", uploaded_by),
+            )
+
     if report_meta is not None and not report_meta.empty:
         report_meta = report_meta.copy()
         if "processed_at" not in report_meta.columns:
             report_meta["processed_at"] = processed_at
         if "uploaded_by" not in report_meta.columns:
-            report_meta["uploaded_by"] = uploaded_by or current_user_email()
+            report_meta["uploaded_by"] = uploaded_by
         report_meta.to_sql("reports", con, if_exists="append", index=False)
-    con.commit(); con.close()
 
+    con.commit(); con.close()
 
 def load_history() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     init_db()
@@ -957,23 +943,17 @@ def load_reports_history() -> pd.DataFrame:
     init_db()
     con = sqlite3.connect(DB_PATH)
     try:
-        df = pd.read_sql_query("SELECT * FROM reports ORDER BY processed_at DESC", con)
+        df = pd.read_sql_query("SELECT rowid AS report_rowid, * FROM reports ORDER BY processed_at DESC", con)
     finally:
         con.close()
     return df
 
 
 SERVICE_MASTER_REQUIRED = {
-    "ServiceApprovalNumber": [
-        "serviceapprovalnumber", "service approval number", "service_approval_number",
-        "service id", "service_id", "entity id", "entity_id", "entityid", "entity number"
-    ],
-    "Provider Approval Number": [
-        "provider approval number", "providerapprovalnumber", "provider_approval_number",
-        "provider id", "provider_id", "providerid"
-    ],
-    "ServiceName": ["servicename", "service name", "service_name", "name of service"],
-    "ProviderLegalName": ["providerlegalname", "provider legal name", "provider name", "provider_name", "legal provider name"],
+    "ServiceApprovalNumber": ["serviceapprovalnumber", "service approval number", "service_approval_number", "service id"],
+    "Provider Approval Number": ["provider approval number", "providerapprovalnumber", "provider_approval_number", "provider id"],
+    "ServiceName": ["servicename", "service name"],
+    "ProviderLegalName": ["providerlegalname", "provider legal name", "provider name"],
 }
 
 
@@ -1083,8 +1063,8 @@ def normalise_service_master_csv(file_obj) -> pd.DataFrame:
     if missing:
         raise ValueError("Missing required columns: " + ", ".join(missing))
     out = pd.DataFrame()
-    out["service_approval_number"] = raw[cols["ServiceApprovalNumber"]].apply(normalise_entity_id)
-    out["provider_approval_number"] = raw[cols["Provider Approval Number"]].apply(normalise_entity_id)
+    out["service_approval_number"] = raw[cols["ServiceApprovalNumber"]].astype(str).str.strip()
+    out["provider_approval_number"] = raw[cols["Provider Approval Number"]].astype(str).str.strip()
     out["service_name"] = raw[cols["ServiceName"]].astype(str).str.strip()
     out["provider_legal_name"] = raw[cols["ProviderLegalName"]].astype(str).str.strip()
     optional_map = {
@@ -1107,7 +1087,7 @@ def normalise_service_master_csv(file_obj) -> pd.DataFrame:
         parents.append(parent); brands.append(brand)
     out["parent_company"] = parents
     out["sub_brand"] = brands
-    out = out[out["service_approval_number"].apply(is_valid_entity_id)].copy()
+    out = out[out["service_approval_number"].str.match(r"^SE-\d{8}$", na=False)].copy()
     out = out.drop_duplicates(subset=["service_approval_number"], keep="last")
     return out
 
@@ -1145,15 +1125,11 @@ def enrich_with_service_master(actions: pd.DataFrame, breaches: pd.DataFrame, ma
     if master_df is None or master_df.empty or a.empty:
         return a, b
     sm = master_df.copy()
-    if "service_approval_number" in sm.columns:
-        sm["service_approval_number"] = sm["service_approval_number"].apply(normalise_entity_id)
-    if "provider_approval_number" in sm.columns:
-        sm["provider_approval_number"] = sm["provider_approval_number"].apply(normalise_entity_id)
     svc_map = sm.drop_duplicates("service_approval_number").set_index("service_approval_number").to_dict("index") if "service_approval_number" in sm.columns else {}
     pr_map = sm.drop_duplicates("provider_approval_number").set_index("provider_approval_number").to_dict("index") if "provider_approval_number" in sm.columns else {}
 
     def enrich_row(row):
-        ent = normalise_entity_id(row.get("entity_id", ""))
+        ent = str(row.get("entity_id", "")).strip()
         rec = svc_map.get(ent) or pr_map.get(ent)
         out = row.copy()
         if rec:
@@ -1167,14 +1143,12 @@ def enrich_with_service_master(actions: pd.DataFrame, breaches: pd.DataFrame, ma
             if not str(out.get("service_name", "")).strip() or looks_like_action_text(str(out.get("service_name", ""))):
                 out["service_name"] = rec.get("service_name", out.get("service_name", ""))
         else:
-            service_name_for_fallback = row.get("service_name", "")
-            provider_for_fallback = "" if looks_like_action_text(str(row.get("provider", ""))) else row.get("provider", "")
-            parent, brand = infer_parent_subbrand(service_name_for_fallback, provider_for_fallback, "")
+            parent, brand = infer_parent_subbrand(row.get("service_name", ""), row.get("provider", ""), "")
             out["provider_legal_name"] = out.get("provider_legal_name", "") or ""
             out["parent_company"] = out.get("parent_company", "") or parent
             out["sub_brand"] = out.get("sub_brand", "") or brand
-            if looks_like_action_text(str(out.get("provider", ""))) or str(out.get("provider", "")).strip() in ["", "Unknown / Needs Mapping"]:
-                out["provider"] = parent if parent and parent != "Unknown / Needs Mapping" else "Unknown / Needs Mapping"
+            if looks_like_action_text(str(out.get("provider", ""))):
+                out["provider"] = parent
         return out
 
     if not a.empty:
@@ -1308,6 +1282,84 @@ def delete_report_data(quarter: str, report_type: str):
     cur.execute("DELETE FROM actions WHERE quarter=? AND report_type=?", (quarter, report_type))
     cur.execute("DELETE FROM reports WHERE quarter=? AND report_type=?", (quarter, report_type))
     con.commit(); con.close()
+
+
+
+def verify_current_admin_password(password: str) -> bool:
+    """Re-check current admin password before destructive actions."""
+    if not is_admin() or not password:
+        return False
+    con = sqlite3.connect(DB_PATH)
+    row = con.execute("SELECT password_hash, salt, active, role FROM users WHERE email=?", (current_user_email(),)).fetchone()
+    con.close()
+    if not row:
+        return False
+    stored_hash, salt, active, role = row
+    return bool(active) and role == "admin" and verify_password(password, stored_hash, salt)
+
+
+def delete_report_file(report_rowid: int, admin_password: str) -> Tuple[bool, str]:
+    """Delete one uploaded report file and only its linked rows."""
+    if not verify_current_admin_password(admin_password):
+        return False, "Admin password incorrect. Nothing deleted."
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    report = cur.execute(
+        "SELECT rowid, run_id, quarter, report_type, file_name FROM reports WHERE rowid=?",
+        (int(report_rowid),),
+    ).fetchone()
+    if not report:
+        con.close()
+        return False, "That saved file could not be found. Refresh and try again."
+
+    _, run_id, quarter, report_type, file_name = report
+
+    # Use the report's run_id + quarter + report_type so deletion is file-level for new uploads.
+    action_ids = [r[0] for r in cur.execute(
+        "SELECT action_id FROM actions WHERE run_id=? AND quarter=? AND report_type=?",
+        (run_id, quarter, report_type),
+    ).fetchall()]
+
+    if action_ids:
+        placeholders = ",".join(["?"] * len(action_ids))
+        cur.execute(f"DELETE FROM breaches WHERE action_id IN ({placeholders})", action_ids)
+
+    cur.execute("DELETE FROM actions WHERE run_id=? AND quarter=? AND report_type=?", (run_id, quarter, report_type))
+    cur.execute("DELETE FROM reports WHERE rowid=?", (int(report_rowid),))
+
+    # Recalculate or remove run row.
+    remaining_actions = cur.execute("SELECT COUNT(*) FROM actions WHERE run_id=?", (run_id,)).fetchone()[0]
+    if remaining_actions:
+        remaining_breaches = cur.execute("SELECT COUNT(*) FROM breaches WHERE run_id=?", (run_id,)).fetchone()[0]
+        cur.execute("UPDATE runs SET actions_count=?, breaches_count=? WHERE run_id=?", (remaining_actions, remaining_breaches, run_id))
+    else:
+        cur.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+
+    con.commit(); con.close()
+    log_audit("delete_report_file", f"Deleted file={file_name}; quarter={quarter}; report_type={report_type}; run_id={run_id}")
+    return True, f"Deleted {file_name} ({quarter} · {report_type})."
+
+
+def master_reset_all_data(admin_password: str, phrase: str) -> Tuple[bool, str]:
+    """Admin-only nuclear reset. Keeps users intact, clears uploaded data/source file/history."""
+    if phrase != "MASTER RESET":
+        return False, "Type MASTER RESET exactly to confirm."
+    if not verify_current_admin_password(admin_password):
+        return False, "Admin password incorrect. Nothing reset."
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    counts = {}
+    for table in ["actions", "breaches", "reports", "runs", "service_master"]:
+        try:
+            counts[table] = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            cur.execute(f"DELETE FROM {table}")
+        except sqlite3.OperationalError:
+            counts[table] = 0
+    con.commit(); con.close()
+    log_audit("master_reset", f"Master reset performed. Cleared: {counts}")
+    return True, "Master reset complete. All uploaded report data and service/provider source data have been cleared. Users remain active."
 
 
 def build_upload_review(uploaded_files: List, provider_rules) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -1790,7 +1842,7 @@ def extract_pdf_table_records(uploaded_file, quarter: str, report_type: str, pro
                             continue
 
                         seq += 1
-                        entity_id = normalise_entity_id(ID_RE.search(entity_id).group(1))
+                        entity_id = ID_RE.search(entity_id).group(1)
                         row_text = " ".join(x for x in [entity_id, service_name, address, nature, reason, date_issued, details] if x)
                         provider_seed = service_name or reason or row_text
                         provider = infer_provider(provider_seed, provider_rules)
@@ -1849,12 +1901,7 @@ def parse_pdf(uploaded_file, quarter: str, report_type: str, provider_rules, run
     if table_actions is not None and not table_actions.empty:
         return table_actions, table_breaches
 
-    # Second fallback: use word coordinates to recover service name left of the Service ID column.
-    word_actions, word_breaches = extract_pdf_wordline_records(uploaded_file, quarter, report_type, provider_rules, run_id)
-    if word_actions is not None and not word_actions.empty:
-        return word_actions, word_breaches
-
-    # Final fallback for PDFs where pdfplumber cannot read the table grid.
+    # Fallback for PDFs where pdfplumber cannot read the table grid.
     text = pre_read_text if pre_read_text is not None else read_pdf_text(uploaded_file)
     blocks = split_blocks(text)
     processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1864,7 +1911,7 @@ def parse_pdf(uploaded_file, quarter: str, report_type: str, provider_rules, run
         date_match = DATE_RE.search(block)
         if not id_match:
             continue
-        entity_id = normalise_entity_id(id_match.group(1))
+        entity_id = id_match.group(1)
         date_issued = date_match.group(1) if date_match else ""
 
         # Fallback only: attempt to infer a sane display name. If it looks like action text,
@@ -2499,26 +2546,50 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
     with action_col:
         process_clicked = st.button("Process uploaded PDFs", key="process_bulk_pdfs_v35", type="primary")
     with history_col:
-        with st.expander("History manager / delete saved data", expanded=False):
+        with st.expander("History manager / delete saved files", expanded=False):
             reports_history = load_reports_history()
-            st.caption(f"Saved runs: {len(runs)}")
+            st.caption("Delete saved report files individually. This is admin-only and requires your admin password.")
             if not reports_history.empty:
-                st.markdown("**Saved reports by quarter/type**")
-                st.dataframe(reports_history[["quarter", "report_type", "file_name", "actions_count", "breaches_count", "processed_at"]], use_container_width=True, hide_index=True, key="saved_reports_history_v35")
-            if not runs.empty:
-                run_labels = [f"{r['quarter']} — {r['processed_at']} — {r['actions_count']} actions" for _, r in runs.iterrows()]
-                selected_delete = st.selectbox("Delete a saved run", [""] + run_labels, key="delete_saved_run_select_v35")
-                if selected_delete:
-                    idx = run_labels.index(selected_delete)
-                    run_id_to_delete = runs.iloc[idx]["run_id"]
-                    confirm_delete = st.text_input("Type DELETE to confirm", key="confirm_run_delete_v35")
-                    if st.button("Delete selected run", key="delete_selected_run_btn_v35", disabled=(confirm_delete != "DELETE")):
-                        show_soft_loading("Please wait. Deleting saved run...")
-                        delete_run(run_id_to_delete)
-                        st.success("Deleted. Refreshing…")
-                        st.rerun()
+                show_cols = [c for c in ["report_rowid", "quarter", "report_type", "file_name", "uploaded_by", "processed_at", "actions_count", "breaches_count"] if c in reports_history.columns]
+                st.dataframe(reports_history[show_cols], use_container_width=True, hide_index=True, key="saved_reports_individual_history_v41")
+
+                labels = []
+                for _, r in reports_history.iterrows():
+                    labels.append(
+                        f"{r.get('quarter','')} — {r.get('report_type','')} — {r.get('file_name','')} — {int(r.get('actions_count') or 0)} actions"
+                    )
+                selected_file_delete = st.selectbox("Select one saved file to delete", [""] + labels, key="delete_saved_file_select_v41")
+                if selected_file_delete:
+                    idx = labels.index(selected_file_delete)
+                    selected_report = reports_history.iloc[idx]
+                    st.warning("This deletes only the selected uploaded file/report and its extracted action + breach rows.")
+                    del_pw = st.text_input("Admin password", type="password", key="delete_file_admin_pw_v41")
+                    del_phrase = st.text_input("Type DELETE to confirm", key="delete_file_phrase_v41")
+                    if st.button("Delete selected file", key="delete_selected_file_btn_v41", disabled=(del_phrase != "DELETE")):
+                        show_soft_loading("Please wait. Deleting selected file...")
+                        ok, msg = delete_report_file(int(selected_report["report_rowid"]), del_pw)
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
             else:
-                st.caption("No saved runs yet.")
+                st.caption("No saved report files yet.")
+
+            st.markdown("---")
+            st.markdown("### Master reset")
+            st.error("Danger zone: clears all uploaded report data, saved report history, and the service/provider source file. User accounts are kept.")
+            reset_pw = st.text_input("Admin password for master reset", type="password", key="master_reset_admin_pw_v41")
+            reset_phrase = st.text_input("Type MASTER RESET to confirm", key="master_reset_phrase_v41")
+            if st.button("Master reset all uploaded data", key="master_reset_btn_v41", disabled=(reset_phrase != "MASTER RESET")):
+                show_soft_loading("Please wait. Performing master reset...")
+                ok, msg = master_reset_all_data(reset_pw, reset_phrase)
+                if ok:
+                    st.session_state["last_upload_success"] = None
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
     if process_clicked:
         if not bulk_files:
@@ -2535,7 +2606,7 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                 st.error("Existing data found. Confirm 'Replace existing data' first or cancel the upload.")
             else:
                 show_soft_loading("Please wait. Processing uploaded files...")
-                run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+                bulk_run_id = datetime.now().strftime("%Y%m%d%H%M%S")
                 all_actions, all_breaches, report_meta = [], [], []
                 processed_files = 0
                 skipped_files = []
@@ -2555,14 +2626,15 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                         if existing and process_mode == "Replace existing quarter/report type":
                             delete_report_data(quarter, rtype)
                         txt = file_text_cache.get(f.name) or read_pdf_text(f)
-                        a, b = parse_pdf(f, quarter, rtype, provider_rules, run_id=run_id, pre_read_text=txt)
+                        file_run_id = f"{bulk_run_id}-{processed_files + 1:03d}"
+                        a, b = parse_pdf(f, quarter, rtype, provider_rules, run_id=file_run_id, pre_read_text=txt)
                         if a.empty:
                             skipped_files.append(f"{f.name} — no action rows extracted")
                             continue
                         all_actions.append(a)
                         all_breaches.append(b)
                         report_meta.append({
-                            "run_id": run_id,
+                            "run_id": file_run_id,
                             "quarter": quarter,
                             "report_type": rtype,
                             "file_name": f.name,
