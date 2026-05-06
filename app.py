@@ -27,12 +27,13 @@ SIGNIFICANT_LAWS = {"165", "166", "167"}
 
 
 def show_soft_loading(message="Please wait. Updating..."):
-    """Show a blocking YA-styled loading overlay before a Streamlit rerun/action."""
+    """Show a YA-styled loading overlay before a Streamlit rerun/action."""
+    safe_message = str(message).replace("<", "&lt;").replace(">", "&gt;")
     st.markdown(f"""
     <div class="ya-loading-overlay">
       <div class="ya-loading-box">
         <div class="ya-loading-spinner"></div>
-        <div class="ya-loading-title">{message}</div>
+        <div class="ya-loading-title">{safe_message}</div>
         <div class="ya-loading-subtitle">Please do not click away while the app updates.</div>
       </div>
     </div>
@@ -52,8 +53,8 @@ def show_soft_loading(message="Please wait. Updating..."):
         width: min(440px, calc(100vw - 48px));
         border-radius: 28px;
         padding: 32px 34px;
-        background: rgba(255,255,255,0.88);
-        border: 1px solid rgba(255,255,255,0.70);
+        background: rgba(255,255,255,0.90);
+        border: 1px solid rgba(255,255,255,0.72);
         box-shadow: 0 28px 80px rgba(0,0,0,0.24);
         text-align: center;
         color: #004f57;
@@ -79,14 +80,9 @@ def show_soft_loading(message="Please wait. Updating..."):
         font-weight: 700;
       }}
       @keyframes ya-spin {{ to {{ transform: rotate(360deg); }} }}
-    
-.ya-success-panel{background:rgba(255,255,255,.92);border:1px solid rgba(255,255,255,.72);box-shadow:0 22px 60px rgba(0,0,0,.18);border-radius:26px;padding:24px 28px;margin:18px 0 24px;color:#004f57}
-.ya-success-title{font-size:24px;font-weight:950;margin-bottom:16px}
-.ya-success-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.ya-success-grid div{background:#eaf6f8;border-radius:18px;padding:16px;font-weight:800;color:#004f57}
-.ya-duplicate-panel{background:rgba(255,248,216,.96);border:2px solid #f1c232;box-shadow:0 18px 48px rgba(0,0,0,.14);border-radius:24px;padding:20px 24px;margin:18px 0;color:#3d3300}.ya-duplicate-panel h3{margin:0 0 8px;font-size:22px}.ya-duplicate-list{margin:10px 0 0 0;padding-left:18px;font-weight:800}
-</style>
+    </style>
     """, unsafe_allow_html=True)
-    time.sleep(0.35)
+    time.sleep(0.25)
 
 DEFAULT_PROVIDER_RULES = [
     ("Young Academics", ["young academics"]),
@@ -877,47 +873,34 @@ def init_db(create_defaults: bool = False):
 
 
 def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame, report_meta: pd.DataFrame = None, uploaded_by: str = ""):
-    """Save processed rows. Supports one run_id per uploaded file so files can be deleted individually."""
     con = sqlite3.connect(DB_PATH)
     processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    uploaded_by = uploaded_by or current_user_email()
-
     if not actions.empty:
         actions = actions.copy()
         if "processed_at" not in actions.columns:
             actions["processed_at"] = processed_at
         if "uploaded_by" not in actions.columns:
-            actions["uploaded_by"] = uploaded_by
+            actions["uploaded_by"] = uploaded_by or current_user_email()
         actions.to_sql("actions", con, if_exists="append", index=False)
-
     if not breaches.empty:
         breaches = breaches.copy()
         if "processed_at" not in breaches.columns:
             breaches["processed_at"] = processed_at
         breaches.to_sql("breaches", con, if_exists="append", index=False)
-
-    # Store one run row per run_id so admin deletion can be file-specific.
     if not actions.empty:
-        for rid, grp in actions.groupby("run_id", dropna=False):
-            rid = str(rid)
-            q_label = ", ".join(sorted([str(q) for q in grp["quarter"].dropna().unique().tolist()]))
-            b_count = 0
-            if not breaches.empty and "run_id" in breaches.columns:
-                b_count = int((breaches["run_id"].astype(str) == rid).sum())
-            con.execute(
-                "INSERT OR REPLACE INTO runs(run_id, quarter, processed_at, actions_count, breaches_count, notes, uploaded_by) VALUES (?,?,?,?,?,?,?)",
-                (rid, q_label, processed_at, int(len(grp)), b_count, "", uploaded_by),
-            )
-
+        run_id = str(actions["run_id"].iloc[0])
+        quarters = sorted([str(q) for q in actions["quarter"].dropna().unique().tolist()])
+        quarter = quarters[0] if len(quarters) == 1 else f"Bulk upload — {len(quarters)} quarters"
+        con.execute("INSERT OR REPLACE INTO runs(run_id, quarter, processed_at, actions_count, breaches_count, notes, uploaded_by) VALUES (?,?,?,?,?,?,?)", (run_id, quarter, processed_at, len(actions), len(breaches), "", uploaded_by or current_user_email()))
     if report_meta is not None and not report_meta.empty:
         report_meta = report_meta.copy()
         if "processed_at" not in report_meta.columns:
             report_meta["processed_at"] = processed_at
         if "uploaded_by" not in report_meta.columns:
-            report_meta["uploaded_by"] = uploaded_by
+            report_meta["uploaded_by"] = uploaded_by or current_user_email()
         report_meta.to_sql("reports", con, if_exists="append", index=False)
-
     con.commit(); con.close()
+
 
 def load_history() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     init_db()
@@ -947,6 +930,87 @@ def load_reports_history() -> pd.DataFrame:
     finally:
         con.close()
     return df
+
+
+def verify_current_admin_password(password: str) -> bool:
+    if not is_admin() or not password:
+        return False
+    email = current_user_email().strip().lower()
+    con = sqlite3.connect(DB_PATH)
+    try:
+        row = con.execute("SELECT password_hash, salt FROM users WHERE lower(email)=? AND active=1", (email,)).fetchone()
+    finally:
+        con.close()
+    return bool(row and verify_password(password, row[0], row[1]))
+
+
+def delete_report_file_by_rowid(report_rowid: int, admin_password: str) -> Tuple[bool, str]:
+    if not verify_current_admin_password(admin_password):
+        return False, "Admin password was incorrect."
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    try:
+        report = cur.execute("SELECT rowid, run_id, quarter, report_type, file_name FROM reports WHERE rowid=?", (int(report_rowid),)).fetchone()
+        if not report:
+            return False, "Saved report file was not found."
+        _, run_id, quarter, report_type, file_name = report
+        action_ids = [r[0] for r in cur.execute(
+            "SELECT action_id FROM actions WHERE run_id=? AND quarter=? AND report_type=?",
+            (run_id, quarter, report_type),
+        ).fetchall()]
+        if action_ids:
+            placeholders = ",".join(["?"] * len(action_ids))
+            cur.execute(f"DELETE FROM breaches WHERE action_id IN ({placeholders})", action_ids)
+        cur.execute("DELETE FROM actions WHERE run_id=? AND quarter=? AND report_type=?", (run_id, quarter, report_type))
+        cur.execute("DELETE FROM reports WHERE rowid=?", (int(report_rowid),))
+        remaining = cur.execute("SELECT COUNT(*) FROM actions WHERE run_id=?", (run_id,)).fetchone()[0]
+        if int(remaining or 0) == 0:
+            cur.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+        con.commit()
+        log_audit("delete_report_file", f"Deleted report_rowid={report_rowid} · {quarter} · {report_type} · {file_name}")
+        return True, f"Deleted {quarter} — {report_type} — {file_name}"
+    except Exception as e:
+        con.rollback()
+        return False, f"Delete failed: {e}"
+    finally:
+        con.close()
+
+
+def delete_multiple_report_files(report_rowids: List[int], admin_password: str) -> Tuple[bool, str]:
+    if not report_rowids:
+        return False, "Select at least one saved report file to delete."
+    if not verify_current_admin_password(admin_password):
+        return False, "Admin password was incorrect."
+    deleted = 0
+    errors = []
+    for rid in report_rowids:
+        ok, msg = delete_report_file_by_rowid(int(rid), admin_password)
+        if ok:
+            deleted += 1
+        else:
+            errors.append(msg)
+    if errors:
+        return False, f"Deleted {deleted}, but {len(errors)} failed: " + "; ".join(errors[:3])
+    return True, f"Deleted {deleted} saved report file(s)."
+
+
+def master_reset_all_data(admin_password: str, confirm_phrase: str) -> Tuple[bool, str]:
+    if confirm_phrase != "MASTER RESET":
+        return False, "Type MASTER RESET exactly to confirm."
+    if not verify_current_admin_password(admin_password):
+        return False, "Admin password was incorrect."
+    con = sqlite3.connect(DB_PATH)
+    try:
+        for table in ["actions", "breaches", "reports", "runs", "service_master"]:
+            con.execute(f"DELETE FROM {table}")
+        con.commit()
+        log_audit("master_reset", "Cleared all uploaded report data and service/provider source data. User accounts kept.")
+        return True, "Master reset complete. Uploaded report data and service/provider source data have been cleared."
+    except Exception as e:
+        con.rollback()
+        return False, f"Master reset failed: {e}"
+    finally:
+        con.close()
 
 
 SERVICE_MASTER_REQUIRED = {
@@ -1282,84 +1346,6 @@ def delete_report_data(quarter: str, report_type: str):
     cur.execute("DELETE FROM actions WHERE quarter=? AND report_type=?", (quarter, report_type))
     cur.execute("DELETE FROM reports WHERE quarter=? AND report_type=?", (quarter, report_type))
     con.commit(); con.close()
-
-
-
-def verify_current_admin_password(password: str) -> bool:
-    """Re-check current admin password before destructive actions."""
-    if not is_admin() or not password:
-        return False
-    con = sqlite3.connect(DB_PATH)
-    row = con.execute("SELECT password_hash, salt, active, role FROM users WHERE email=?", (current_user_email(),)).fetchone()
-    con.close()
-    if not row:
-        return False
-    stored_hash, salt, active, role = row
-    return bool(active) and role == "admin" and verify_password(password, stored_hash, salt)
-
-
-def delete_report_file(report_rowid: int, admin_password: str) -> Tuple[bool, str]:
-    """Delete one uploaded report file and only its linked rows."""
-    if not verify_current_admin_password(admin_password):
-        return False, "Admin password incorrect. Nothing deleted."
-
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    report = cur.execute(
-        "SELECT rowid, run_id, quarter, report_type, file_name FROM reports WHERE rowid=?",
-        (int(report_rowid),),
-    ).fetchone()
-    if not report:
-        con.close()
-        return False, "That saved file could not be found. Refresh and try again."
-
-    _, run_id, quarter, report_type, file_name = report
-
-    # Use the report's run_id + quarter + report_type so deletion is file-level for new uploads.
-    action_ids = [r[0] for r in cur.execute(
-        "SELECT action_id FROM actions WHERE run_id=? AND quarter=? AND report_type=?",
-        (run_id, quarter, report_type),
-    ).fetchall()]
-
-    if action_ids:
-        placeholders = ",".join(["?"] * len(action_ids))
-        cur.execute(f"DELETE FROM breaches WHERE action_id IN ({placeholders})", action_ids)
-
-    cur.execute("DELETE FROM actions WHERE run_id=? AND quarter=? AND report_type=?", (run_id, quarter, report_type))
-    cur.execute("DELETE FROM reports WHERE rowid=?", (int(report_rowid),))
-
-    # Recalculate or remove run row.
-    remaining_actions = cur.execute("SELECT COUNT(*) FROM actions WHERE run_id=?", (run_id,)).fetchone()[0]
-    if remaining_actions:
-        remaining_breaches = cur.execute("SELECT COUNT(*) FROM breaches WHERE run_id=?", (run_id,)).fetchone()[0]
-        cur.execute("UPDATE runs SET actions_count=?, breaches_count=? WHERE run_id=?", (remaining_actions, remaining_breaches, run_id))
-    else:
-        cur.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
-
-    con.commit(); con.close()
-    log_audit("delete_report_file", f"Deleted file={file_name}; quarter={quarter}; report_type={report_type}; run_id={run_id}")
-    return True, f"Deleted {file_name} ({quarter} · {report_type})."
-
-
-def master_reset_all_data(admin_password: str, phrase: str) -> Tuple[bool, str]:
-    """Admin-only nuclear reset. Keeps users intact, clears uploaded data/source file/history."""
-    if phrase != "MASTER RESET":
-        return False, "Type MASTER RESET exactly to confirm."
-    if not verify_current_admin_password(admin_password):
-        return False, "Admin password incorrect. Nothing reset."
-
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    counts = {}
-    for table in ["actions", "breaches", "reports", "runs", "service_master"]:
-        try:
-            counts[table] = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            cur.execute(f"DELETE FROM {table}")
-        except sqlite3.OperationalError:
-            counts[table] = 0
-    con.commit(); con.close()
-    log_audit("master_reset", f"Master reset performed. Cleared: {counts}")
-    return True, "Master reset complete. All uploaded report data and service/provider source data have been cleared. Users remain active."
 
 
 def build_upload_review(uploaded_files: List, provider_rules) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -2548,26 +2534,42 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
     with history_col:
         with st.expander("History manager / delete saved files", expanded=False):
             reports_history = load_reports_history()
-            st.caption("Delete saved report files individually. This is admin-only and requires your admin password.")
+            st.caption("Select one or more saved report files to delete. Admin-only. Requires your current admin password.")
             if not reports_history.empty:
                 show_cols = [c for c in ["report_rowid", "quarter", "report_type", "file_name", "uploaded_by", "processed_at", "actions_count", "breaches_count"] if c in reports_history.columns]
-                st.dataframe(reports_history[show_cols], use_container_width=True, hide_index=True, key="saved_reports_individual_history_v41")
+                delete_df = reports_history[show_cols].copy()
+                delete_df.insert(0, "Delete", False)
 
-                labels = []
-                for _, r in reports_history.iterrows():
-                    labels.append(
-                        f"{r.get('quarter','')} — {r.get('report_type','')} — {r.get('file_name','')} — {int(r.get('actions_count') or 0)} actions"
-                    )
-                selected_file_delete = st.selectbox("Select one saved file to delete", [""] + labels, key="delete_saved_file_select_v41")
-                if selected_file_delete:
-                    idx = labels.index(selected_file_delete)
-                    selected_report = reports_history.iloc[idx]
-                    st.warning("This deletes only the selected uploaded file/report and its extracted action + breach rows.")
-                    del_pw = st.text_input("Admin password", type="password", key="delete_file_admin_pw_v41")
-                    del_phrase = st.text_input("Type DELETE to confirm", key="delete_file_phrase_v41")
-                    if st.button("Delete selected file", key="delete_selected_file_btn_v41", disabled=(del_phrase != "DELETE")):
-                        show_soft_loading("Please wait. Deleting selected file...")
-                        ok, msg = delete_report_file(int(selected_report["report_rowid"]), del_pw)
+                edited_delete_df = st.data_editor(
+                    delete_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    key="saved_report_mass_delete_editor_v42",
+                    disabled=[c for c in delete_df.columns if c != "Delete"],
+                    column_config={
+                        "Delete": st.column_config.CheckboxColumn("Delete", help="Tick the saved report file(s) to remove"),
+                        "report_rowid": st.column_config.NumberColumn("ID", width="small"),
+                        "quarter": st.column_config.TextColumn("Quarter", width="medium"),
+                        "report_type": st.column_config.TextColumn("Report type", width="medium"),
+                        "file_name": st.column_config.TextColumn("File", width="large"),
+                        "uploaded_by": st.column_config.TextColumn("Uploaded by", width="medium"),
+                        "processed_at": st.column_config.TextColumn("Uploaded at", width="medium"),
+                        "actions_count": st.column_config.NumberColumn("Actions", width="small"),
+                        "breaches_count": st.column_config.NumberColumn("Breaches", width="small"),
+                    },
+                )
+
+                selected_rows = edited_delete_df[edited_delete_df["Delete"] == True] if not edited_delete_df.empty else pd.DataFrame()
+                selected_ids = selected_rows["report_rowid"].astype(int).tolist() if not selected_rows.empty else []
+                st.caption(f"Selected for deletion: {len(selected_ids)} file(s)")
+
+                if selected_ids:
+                    st.warning("This will delete only the selected saved report file(s) and their extracted action + breach rows. Other files from the same quarter remain.")
+                    del_pw = st.text_input("Admin password", type="password", key="mass_delete_admin_pw_v42")
+                    del_phrase = st.text_input("Type DELETE to confirm", key="mass_delete_phrase_v42")
+                    if st.button("Delete selected file(s)", key="mass_delete_selected_reports_btn_v42", type="primary", disabled=(del_phrase != "DELETE")):
+                        show_soft_loading("Please wait. Deleting selected file(s)...")
+                        ok, msg = delete_multiple_report_files(selected_ids, del_pw)
                         if ok:
                             st.success(msg)
                             st.rerun()
@@ -2579,9 +2581,9 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
             st.markdown("---")
             st.markdown("### Master reset")
             st.error("Danger zone: clears all uploaded report data, saved report history, and the service/provider source file. User accounts are kept.")
-            reset_pw = st.text_input("Admin password for master reset", type="password", key="master_reset_admin_pw_v41")
-            reset_phrase = st.text_input("Type MASTER RESET to confirm", key="master_reset_phrase_v41")
-            if st.button("Master reset all uploaded data", key="master_reset_btn_v41", disabled=(reset_phrase != "MASTER RESET")):
+            reset_pw = st.text_input("Admin password for master reset", type="password", key="master_reset_admin_pw_v42")
+            reset_phrase = st.text_input("Type MASTER RESET to confirm", key="master_reset_phrase_v42")
+            if st.button("Master reset all uploaded data", key="master_reset_btn_v42", disabled=(reset_phrase != "MASTER RESET")):
                 show_soft_loading("Please wait. Performing master reset...")
                 ok, msg = master_reset_all_data(reset_pw, reset_phrase)
                 if ok:
@@ -2606,7 +2608,7 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                 st.error("Existing data found. Confirm 'Replace existing data' first or cancel the upload.")
             else:
                 show_soft_loading("Please wait. Processing uploaded files...")
-                bulk_run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+                run_id = datetime.now().strftime("%Y%m%d%H%M%S")
                 all_actions, all_breaches, report_meta = [], [], []
                 processed_files = 0
                 skipped_files = []
@@ -2626,15 +2628,14 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                         if existing and process_mode == "Replace existing quarter/report type":
                             delete_report_data(quarter, rtype)
                         txt = file_text_cache.get(f.name) or read_pdf_text(f)
-                        file_run_id = f"{bulk_run_id}-{processed_files + 1:03d}"
-                        a, b = parse_pdf(f, quarter, rtype, provider_rules, run_id=file_run_id, pre_read_text=txt)
+                        a, b = parse_pdf(f, quarter, rtype, provider_rules, run_id=run_id, pre_read_text=txt)
                         if a.empty:
                             skipped_files.append(f"{f.name} — no action rows extracted")
                             continue
                         all_actions.append(a)
                         all_breaches.append(b)
                         report_meta.append({
-                            "run_id": file_run_id,
+                            "run_id": run_id,
                             "quarter": quarter,
                             "report_type": rtype,
                             "file_name": f.name,
