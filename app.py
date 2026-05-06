@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.9 — Restored + table extraction fix"
+APP_VERSION = "v4.0 — Quarter chips + table exports"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -27,18 +27,17 @@ SIGNIFICANT_LAWS = {"165", "166", "167"}
 
 
 def show_soft_loading(message="Please wait. Updating..."):
-    """Show a YA-styled loading overlay before a Streamlit rerun/action."""
-    safe_message = str(message).replace("<", "&lt;").replace(">", "&gt;")
-    html = """
+    """Show a blocking YA-styled loading overlay before a Streamlit rerun/action."""
+    st.markdown(f"""
     <div class="ya-loading-overlay">
       <div class="ya-loading-box">
         <div class="ya-loading-spinner"></div>
-        <div class="ya-loading-title">__MESSAGE__</div>
+        <div class="ya-loading-title">{message}</div>
         <div class="ya-loading-subtitle">Please do not click away while the app updates.</div>
       </div>
     </div>
     <style>
-      .ya-loading-overlay {
+      .ya-loading-overlay {{
         position: fixed;
         inset: 0;
         z-index: 999999;
@@ -48,8 +47,8 @@ def show_soft_loading(message="Please wait. Updating..."):
         display: flex;
         align-items: center;
         justify-content: center;
-      }
-      .ya-loading-box {
+      }}
+      .ya-loading-box {{
         width: min(440px, calc(100vw - 48px));
         border-radius: 28px;
         padding: 32px 34px;
@@ -58,8 +57,8 @@ def show_soft_loading(message="Please wait. Updating..."):
         box-shadow: 0 28px 80px rgba(0,0,0,0.24);
         text-align: center;
         color: #004f57;
-      }
-      .ya-loading-spinner {
+      }}
+      .ya-loading-spinner {{
         width: 48px;
         height: 48px;
         margin: 0 auto 18px;
@@ -67,30 +66,27 @@ def show_soft_loading(message="Please wait. Updating..."):
         border: 5px solid rgba(0,79,87,0.18);
         border-top-color: #60d6cf;
         animation: ya-spin 0.85s linear infinite;
-      }
-      .ya-loading-title {
+      }}
+      .ya-loading-title {{
         font-size: 22px;
         font-weight: 900;
         letter-spacing: -0.02em;
         margin-bottom: 8px;
-      }
-      .ya-loading-subtitle {
+      }}
+      .ya-loading-subtitle {{
         font-size: 13px;
         color: rgba(0,79,87,0.72);
         font-weight: 700;
-      }
-      @keyframes ya-spin { to { transform: rotate(360deg); } }
-      .ya-success-panel{background:rgba(255,255,255,.92);border:1px solid rgba(255,255,255,.72);box-shadow:0 22px 60px rgba(0,0,0,.18);border-radius:26px;padding:24px 28px;margin:18px 0 24px;color:#004f57}
-      .ya-success-title{font-size:24px;font-weight:950;margin-bottom:16px}
-      .ya-success-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-      .ya-success-grid div{background:#eaf6f8;border-radius:18px;padding:16px;font-weight:800;color:#004f57}
-      .ya-duplicate-panel{background:rgba(255,248,216,.96);border:2px solid #f1c232;box-shadow:0 18px 48px rgba(0,0,0,.14);border-radius:24px;padding:20px 24px;margin:18px 0;color:#3d3300}
-      .ya-duplicate-panel h3{margin:0 0 8px;font-size:22px}
-      .ya-duplicate-list{margin:10px 0 0 0;padding-left:18px;font-weight:800}
-    </style>
-    """.replace("__MESSAGE__", safe_message)
-    st.markdown(html, unsafe_allow_html=True)
-    time.sleep(0.2)
+      }}
+      @keyframes ya-spin {{ to {{ transform: rotate(360deg); }} }}
+    
+.ya-success-panel{background:rgba(255,255,255,.92);border:1px solid rgba(255,255,255,.72);box-shadow:0 22px 60px rgba(0,0,0,.18);border-radius:26px;padding:24px 28px;margin:18px 0 24px;color:#004f57}
+.ya-success-title{font-size:24px;font-weight:950;margin-bottom:16px}
+.ya-success-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.ya-success-grid div{background:#eaf6f8;border-radius:18px;padding:16px;font-weight:800;color:#004f57}
+.ya-duplicate-panel{background:rgba(255,248,216,.96);border:2px solid #f1c232;box-shadow:0 18px 48px rgba(0,0,0,.14);border-radius:24px;padding:20px 24px;margin:18px 0;color:#3d3300}.ya-duplicate-panel h3{margin:0 0 8px;font-size:22px}.ya-duplicate-list{margin:10px 0 0 0;padding-left:18px;font-weight:800}
+</style>
+    """, unsafe_allow_html=True)
+    time.sleep(0.35)
 
 DEFAULT_PROVIDER_RULES = [
     ("Young Academics", ["young academics"]),
@@ -880,99 +876,34 @@ def init_db(create_defaults: bool = False):
         ensure_default_users()
 
 
-def _sqlite_type_for_series(series: pd.Series) -> str:
-    """Return a safe SQLite column type for a pandas Series."""
-    try:
-        if pd.api.types.is_integer_dtype(series):
-            return "INTEGER"
-        if pd.api.types.is_float_dtype(series):
-            return "REAL"
-    except Exception:
-        pass
-    return "TEXT"
-
-
-def _safe_sql_append(con: sqlite3.Connection, table_name: str, df: pd.DataFrame):
-    """Append a DataFrame to SQLite without crashing when new columns appear.
-
-    The app schema has changed a lot during builds. Existing Streamlit Cloud
-    databases may have older versions of the tables. Pandas `to_sql(...,
-    if_exists='append')` crashes if the DataFrame has columns the table does not
-    yet have. This function adds missing columns first, then writes.
-    """
-    if df is None or df.empty:
-        return
-
-    df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-
-    existing_cols = [r[1] for r in con.execute(f"PRAGMA table_info({table_name})").fetchall()]
-    if not existing_cols:
-        df.to_sql(table_name, con, if_exists="append", index=False)
-        return
-
-    for col in df.columns:
-        if col not in existing_cols:
-            col_type = _sqlite_type_for_series(df[col])
-            safe_col = str(col).replace('"', '""')
-            con.execute(f'ALTER TABLE {table_name} ADD COLUMN "{safe_col}" {col_type}')
-            existing_cols.append(col)
-
-    # Ensure old columns that are missing from this upload still exist in df.
-    # This keeps inserts stable even when pandas/schema column order varies.
-    for col in existing_cols:
-        if col not in df.columns:
-            df[col] = None
-
-    df = df[existing_cols]
-    df.to_sql(table_name, con, if_exists="append", index=False)
-
-
 def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame, report_meta: pd.DataFrame = None, uploaded_by: str = ""):
-    init_db(create_defaults=False)
     con = sqlite3.connect(DB_PATH)
     processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    user_email = uploaded_by or current_user_email()
-    try:
-        if actions is not None and not actions.empty:
-            actions = actions.copy()
-            if "processed_at" not in actions.columns:
-                actions["processed_at"] = processed_at
-            if "uploaded_by" not in actions.columns:
-                actions["uploaded_by"] = user_email
-            _safe_sql_append(con, "actions", actions)
-
-        if breaches is not None and not breaches.empty:
-            breaches = breaches.copy()
-            if "processed_at" not in breaches.columns:
-                breaches["processed_at"] = processed_at
-            if "uploaded_by" not in breaches.columns:
-                breaches["uploaded_by"] = user_email
-            _safe_sql_append(con, "breaches", breaches)
-
-        if actions is not None and not actions.empty:
-            run_id = str(actions["run_id"].iloc[0]) if "run_id" in actions.columns else datetime.now().strftime("%Y%m%d%H%M%S")
-            quarters = sorted([str(q) for q in actions.get("quarter", pd.Series(dtype=str)).dropna().unique().tolist()])
-            quarter = quarters[0] if len(quarters) == 1 else f"Bulk upload — {len(quarters)} quarters"
-            con.execute(
-                "INSERT OR REPLACE INTO runs(run_id, quarter, processed_at, actions_count, breaches_count, notes, uploaded_by) VALUES (?,?,?,?,?,?,?)",
-                (run_id, quarter, processed_at, int(len(actions)), int(len(breaches) if breaches is not None else 0), "", user_email),
-            )
-
-        if report_meta is not None and not report_meta.empty:
-            report_meta = report_meta.copy()
-            if "processed_at" not in report_meta.columns:
-                report_meta["processed_at"] = processed_at
-            if "uploaded_by" not in report_meta.columns:
-                report_meta["uploaded_by"] = user_email
-            _safe_sql_append(con, "reports", report_meta)
-
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
+    if not actions.empty:
+        actions = actions.copy()
+        if "processed_at" not in actions.columns:
+            actions["processed_at"] = processed_at
+        if "uploaded_by" not in actions.columns:
+            actions["uploaded_by"] = uploaded_by or current_user_email()
+        actions.to_sql("actions", con, if_exists="append", index=False)
+    if not breaches.empty:
+        breaches = breaches.copy()
+        if "processed_at" not in breaches.columns:
+            breaches["processed_at"] = processed_at
+        breaches.to_sql("breaches", con, if_exists="append", index=False)
+    if not actions.empty:
+        run_id = str(actions["run_id"].iloc[0])
+        quarters = sorted([str(q) for q in actions["quarter"].dropna().unique().tolist()])
+        quarter = quarters[0] if len(quarters) == 1 else f"Bulk upload — {len(quarters)} quarters"
+        con.execute("INSERT OR REPLACE INTO runs(run_id, quarter, processed_at, actions_count, breaches_count, notes, uploaded_by) VALUES (?,?,?,?,?,?,?)", (run_id, quarter, processed_at, len(actions), len(breaches), "", uploaded_by or current_user_email()))
+    if report_meta is not None and not report_meta.empty:
+        report_meta = report_meta.copy()
+        if "processed_at" not in report_meta.columns:
+            report_meta["processed_at"] = processed_at
+        if "uploaded_by" not in report_meta.columns:
+            report_meta["uploaded_by"] = uploaded_by or current_user_email()
+        report_meta.to_sql("reports", con, if_exists="append", index=False)
+    con.commit(); con.close()
 
 
 def load_history() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -1338,6 +1269,66 @@ def delete_report_data(quarter: str, report_type: str):
     cur.execute("DELETE FROM actions WHERE quarter=? AND report_type=?", (quarter, report_type))
     cur.execute("DELETE FROM reports WHERE quarter=? AND report_type=?", (quarter, report_type))
     con.commit(); con.close()
+
+
+def delete_report_files(report_rows: pd.DataFrame):
+    """Admin-only bulk delete by individual report rows. Keeps users intact."""
+    if report_rows is None or report_rows.empty:
+        return 0
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    deleted = 0
+    for _, row in report_rows.iterrows():
+        quarter = str(row.get("quarter", ""))
+        report_type = str(row.get("report_type", ""))
+        file_name = str(row.get("file_name", ""))
+        run_id = str(row.get("run_id", ""))
+        action_ids = [r[0] for r in cur.execute(
+            "SELECT action_id FROM actions WHERE quarter=? AND report_type=? AND run_id=?",
+            (quarter, report_type, run_id)
+        ).fetchall()]
+        if action_ids:
+            placeholders = ",".join(["?"] * len(action_ids))
+            cur.execute(f"DELETE FROM breaches WHERE action_id IN ({placeholders})", action_ids)
+        cur.execute("DELETE FROM actions WHERE quarter=? AND report_type=? AND run_id=?", (quarter, report_type, run_id))
+        cur.execute("DELETE FROM reports WHERE quarter=? AND report_type=? AND run_id=? AND file_name=?", (quarter, report_type, run_id, file_name))
+        # Remove empty run records after the report-level delete.
+        remaining = cur.execute("SELECT COUNT(*) FROM actions WHERE run_id=?", (run_id,)).fetchone()[0]
+        if remaining == 0:
+            cur.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+        deleted += 1
+    con.commit(); con.close()
+    log_audit("delete_report_files", f"Deleted {deleted} saved report file(s)")
+    return deleted
+
+
+def master_reset_uploaded_data(admin_password: str, phrase: str) -> Tuple[bool, str]:
+    """Admin-only full reset of uploaded report/source data. Users remain intact."""
+    if not is_admin():
+        return False, "Only admins can perform a master reset."
+    if not verify_current_admin_password(admin_password):
+        return False, "Admin password incorrect. Nothing reset."
+    if str(phrase).strip() != "MASTER RESET":
+        return False, "Type MASTER RESET exactly to confirm."
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    counts = {}
+    for table in ["actions", "breaches", "runs", "reports", "service_master", "audit_logs"]:
+        try:
+            counts[table] = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            cur.execute(f"DELETE FROM {table}")
+        except Exception:
+            counts[table] = "not found"
+    con.commit(); con.close()
+    # Clear all app state that can make old data look like it still exists.
+    preserve = {"logged_in", "current_user", "auth_ok"}
+    for k in list(st.session_state.keys()):
+        if k not in preserve:
+            del st.session_state[k]
+    log_audit("master_reset", f"Master reset performed. Cleared: {counts}")
+    return True, "Master reset complete. Uploaded data, service/provider source file, report history, and audit logs have been cleared. Users remain active."
 
 
 def build_upload_review(uploaded_files: List, provider_rules) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -2129,6 +2120,49 @@ def to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
     return output.getvalue()
 
 
+
+def exportable_table(title: str, df: pd.DataFrame, key: str, file_prefix: str = None, caption: str = None):
+    """Render a table with its own CSV export button."""
+    st.markdown(f"### {title}")
+    if caption:
+        st.caption(caption)
+    if df is None or df.empty:
+        st.info("No rows for the current selection.")
+        return
+    st.dataframe(df, use_container_width=True, hide_index=True, key=f"table_{key}")
+    clean_prefix = file_prefix or title.lower()
+    clean_prefix = re.sub(r"[^a-z0-9]+", "_", clean_prefix.lower()).strip("_") or "table"
+    st.download_button(
+        f"Download {title} CSV",
+        df.to_csv(index=False).encode("utf-8"),
+        f"{clean_prefix}.csv",
+        "text/csv",
+        key=f"download_{key}",
+    )
+
+
+def render_quarter_selector(quarters_all: List[str]) -> List[str]:
+    """Clickable quarter chips/check boxes rather than a cramped multiselect."""
+    if not quarters_all:
+        return []
+    st.markdown("### Report controls")
+    use_all_quarters = st.checkbox("Use all uploaded quarters", value=True, key="use_all_uploaded_quarters_v40")
+    if use_all_quarters:
+        st.markdown(f"<span class='ya-pill'>All-time view active: {len(quarters_all)} quarters selected</span>", unsafe_allow_html=True)
+        return quarters_all
+
+    st.caption("Click quarters on/off to include or remove them from the report.")
+    selected = []
+    cols = st.columns(min(4, max(1, len(quarters_all))))
+    for i, q in enumerate(quarters_all):
+        with cols[i % len(cols)]:
+            default = bool(st.session_state.get(f"quarter_chip_{i}_{q}", i < 4))
+            if st.checkbox(q, value=default, key=f"quarter_chip_{i}_{q}"):
+                selected.append(q)
+    if not selected:
+        st.warning("Select at least one quarter to populate the dashboard.")
+    return selected
+
 def render_header():
     st.markdown(f"""
     <div class='ya-shell'>
@@ -2524,26 +2558,49 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
     with action_col:
         process_clicked = st.button("Process uploaded PDFs", key="process_bulk_pdfs_v35", type="primary")
     with history_col:
-        with st.expander("History manager / delete saved data", expanded=False):
+        with st.expander("History manager / delete saved files", expanded=False):
             reports_history = load_reports_history()
-            st.caption(f"Saved runs: {len(runs)}")
-            if not reports_history.empty:
-                st.markdown("**Saved reports by quarter/type**")
-                st.dataframe(reports_history[["quarter", "report_type", "file_name", "actions_count", "breaches_count", "processed_at"]], use_container_width=True, hide_index=True, key="saved_reports_history_v35")
-            if not runs.empty:
-                run_labels = [f"{r['quarter']} — {r['processed_at']} — {r['actions_count']} actions" for _, r in runs.iterrows()]
-                selected_delete = st.selectbox("Delete a saved run", [""] + run_labels, key="delete_saved_run_select_v35")
-                if selected_delete:
-                    idx = run_labels.index(selected_delete)
-                    run_id_to_delete = runs.iloc[idx]["run_id"]
-                    confirm_delete = st.text_input("Type DELETE to confirm", key="confirm_run_delete_v35")
-                    if st.button("Delete selected run", key="delete_selected_run_btn_v35", disabled=(confirm_delete != "DELETE")):
-                        show_soft_loading("Please wait. Deleting saved run...")
-                        delete_run(run_id_to_delete)
-                        st.success("Deleted. Refreshing…")
-                        st.rerun()
+            st.caption("Delete saved report files individually or in bulk. Admin password required.")
+            if reports_history.empty:
+                st.caption("No saved report files yet.")
             else:
-                st.caption("No saved runs yet.")
+                display_cols = [c for c in ["run_id", "quarter", "report_type", "file_name", "uploaded_by", "actions_count", "breaches_count", "processed_at"] if c in reports_history.columns]
+                delete_df = reports_history[display_cols].copy()
+                delete_df.insert(0, "Delete", False)
+                edited_delete_df = st.data_editor(
+                    delete_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    key="saved_report_file_delete_editor_v50",
+                    column_config={"Delete": st.column_config.CheckboxColumn("Delete", help="Tick files to delete")},
+                    disabled=[c for c in delete_df.columns if c != "Delete"],
+                )
+                selected = edited_delete_df[edited_delete_df["Delete"] == True].drop(columns=["Delete"], errors="ignore")
+                st.caption(f"Selected files: {len(selected)}")
+                bulk_delete_pw = st.text_input("Admin password to delete selected files", type="password", key="bulk_delete_files_pw_v50")
+                bulk_delete_phrase = st.text_input("Type DELETE to confirm selected file deletion", key="bulk_delete_files_phrase_v50")
+                if st.button("Delete selected saved files", key="bulk_delete_files_btn_v50", disabled=(selected.empty or bulk_delete_phrase != "DELETE")):
+                    if not verify_current_admin_password(bulk_delete_pw):
+                        st.error("Admin password incorrect. Nothing deleted.")
+                    else:
+                        show_soft_loading("Please wait. Deleting selected report files...")
+                        count = delete_report_files(selected)
+                        st.success(f"Deleted {count} saved report file(s). Refreshing…")
+                        st.rerun()
+
+            st.markdown("---")
+            st.markdown("### Master reset")
+            st.warning("This clears all uploaded reports, extracted data, saved history, uploaded service/provider source data, and audit logs. User accounts remain.")
+            reset_pw = st.text_input("Admin password for master reset", type="password", key="master_reset_pw_v50")
+            reset_phrase = st.text_input("Type MASTER RESET to confirm", key="master_reset_phrase_v50")
+            if st.button("Master reset all uploaded data", key="master_reset_btn_v50", disabled=(reset_phrase != "MASTER RESET")):
+                show_soft_loading("Please wait. Performing master reset...")
+                ok, msg = master_reset_uploaded_data(reset_pw, reset_phrase)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
     if process_clicked:
         if not bulk_files:
@@ -2559,17 +2616,14 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
             elif (review_df["Existing rows"].fillna(0).astype(int) > 0).any() and not st.session_state.get("replace_duplicates_confirmed"):
                 st.error("Existing data found. Confirm 'Replace existing data' first or cancel the upload.")
             else:
-                st.info("Please wait. Processing uploaded files… This can take a minute for large PDFs. Do not click away.")
-                progress = st.progress(0, text="Preparing upload…")
+                show_soft_loading("Please wait. Processing uploaded files...")
                 run_id = datetime.now().strftime("%Y%m%d%H%M%S")
                 all_actions, all_breaches, report_meta = [], [], []
                 processed_files = 0
                 skipped_files = []
                 with st.spinner("Processing bulk upload…"):
                     files_to_process = {str(x) for x in review_df["File"].tolist()}
-                    total_files_for_progress = max(1, len(bulk_files))
-                    for idx, f in enumerate(bulk_files, start=1):
-                        progress.progress(min(95, int((idx - 1) / total_files_for_progress * 95)), text=f"Processing {idx} of {total_files_for_progress}: {f.name}")
+                    for f in bulk_files:
                         if f.name not in files_to_process:
                             skipped_files.append(f"{f.name} — removed from upload review")
                             continue
@@ -2600,7 +2654,6 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         })
                         processed_files += 1
-                progress.progress(96, text="Preparing extracted data…")
                 actions = pd.concat(all_actions, ignore_index=True) if all_actions else pd.DataFrame()
                 breaches = pd.concat(all_breaches, ignore_index=True) if all_breaches else pd.DataFrame()
                 actions, breaches = enrich_with_service_master(actions, breaches)
@@ -2608,14 +2661,12 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                 if actions.empty:
                     st.warning("No new rows were saved. " + (" Skipped: " + "; ".join(skipped_files[:8]) if skipped_files else ""))
                 else:
-                    progress.progress(98, text="Saving to database…")
                     save_to_db(actions, breaches, meta_df)
                     quarters_saved = ", ".join(sorted(actions["quarter"].unique().tolist()))
                     st.session_state["last_upload_success"] = {"quarters": quarters_saved, "files": processed_files, "actions": len(actions), "breaches": len(breaches)}
                     st.session_state["replace_duplicates_confirmed"] = False
                     st.session_state["upload_removed_files"] = []
                     st.session_state["upload_widget_nonce"] = st.session_state.get("upload_widget_nonce", 0) + 1
-                    progress.progress(100, text="Upload complete.")
                     st.success(f"Processed {processed_files} file(s), saved {len(actions)} actions and {len(breaches)} breach references across: {quarters_saved}.")
                     if skipped_files:
                         st.info("Skipped: " + "; ".join(skipped_files[:10]))
@@ -2813,6 +2864,8 @@ def make_law_glossary(actions: pd.DataFrame, breaches: pd.DataFrame) -> pd.DataF
             "plain_english": plain,
             "times_breached": int(r["times_breached"]),
             "sample_excerpt": sample.get(code, ""),
+            "source": "NSW legislation / Education and Care Services National Law & National Regulations",
+            "source_note": "Definitions are plain-English summaries for internal reporting; verify final legal wording against NSW legislation before external use.",
         })
     return pd.DataFrame(rows)
 
@@ -2825,19 +2878,7 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
     all_quarters = sorted_quarter_list(hist_actions)
     quarters_all = list(dict.fromkeys(hist_actions.sort_values("processed_at", ascending=False)["quarter"].astype(str).tolist()))
 
-    st.markdown("### Report controls")
-    use_all_quarters = st.checkbox("Use all uploaded quarters", value=False, key="use_all_uploaded_quarters_v36")
-    if use_all_quarters:
-        selected_quarters = quarters_all
-        st.markdown(f"<span class='ya-pill'>All-time view active: {len(selected_quarters)} quarters selected</span>", unsafe_allow_html=True)
-    else:
-        selected_quarters = st.multiselect(
-            "Quarters to include in executive position and reports",
-            quarters_all,
-            default=quarters_all[:4],
-            help="Select one, several, or all quarters. Executive position updates dynamically based on this selection.",
-            key="report_quarter_multiselect_v36",
-        )
+    selected_quarters = render_quarter_selector(quarters_all)
 
     show_actions = hist_actions[hist_actions["quarter"].isin(selected_quarters)] if selected_quarters else hist_actions
     show_breaches = hist_breaches[hist_breaches["quarter"].isin(selected_quarters)] if selected_quarters and not hist_breaches.empty else hist_breaches
@@ -2868,7 +2909,6 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
     k5.metric("YA significant", f"{ya_sig:,}")
     with st.expander("What do these executive position numbers mean?", expanded=False):
         render_kpi_notes()
-    st.markdown(f"<div class='ya-warning'><strong>{ya_position_text(rolling_summary)}</strong></div>", unsafe_allow_html=True)
 
     tab_names = ["Dashboard", "Rolling view", "All time", "Pivot views", "Provider summary", "Law/Reg breakdown", "Law glossary", "Raw extracted rows", "Export"]
     tabs = st.tabs(tab_names)
@@ -2880,19 +2920,20 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
             render_pie(action_category, "Actions by category", key="pie_actions_selected_v36")
         with pie_col2:
             render_pie(breach_category, "Breach references by category", key="pie_breaches_selected_v36")
-        st.markdown("### Compliance position by provider")
-        st.caption("Board-style breach split for the selected quarter(s): Law 165/166/167 vs all other Law/Reg references.")
         compliance_position = make_compliance_position_table(show_breaches)
-        st.dataframe(compliance_position, use_container_width=True, hide_index=True, key="compliance_position_table_v38")
-        st.markdown("### Category tables")
-        st.dataframe(action_category, use_container_width=True, hide_index=True, key="action_category_selected_v38")
-        st.dataframe(breach_category, use_container_width=True, hide_index=True, key="breach_category_selected_v38")
+        exportable_table(
+            "Compliance position by provider",
+            compliance_position,
+            "compliance_position_v40",
+            "compliance_position_by_provider",
+            "Board-style breach split for the selected quarter(s): Law 165/166/167 vs all other Law/Reg references.",
+        )
+        exportable_table("Actions by category", action_category, "action_category_selected_v40", "actions_by_category")
+        exportable_table("Breach references by category", breach_category, "breach_category_selected_v40", "breach_references_by_category")
         st.markdown("### Competitor breakdown by category")
         st.caption("Provider/category tables are stacked vertically for readability.")
-        st.markdown("#### Actions by provider/category")
-        st.dataframe(provider_action_category, use_container_width=True, hide_index=True, key="provider_action_category_v35")
-        st.markdown("#### Breaches by provider/category")
-        st.dataframe(provider_breach_category, use_container_width=True, hide_index=True, key="provider_breach_category_v38")
+        exportable_table("Actions by provider/category", provider_action_category, "provider_action_category_v40", "actions_by_provider_category")
+        exportable_table("Breaches by provider/category", provider_breach_category, "provider_breach_category_v40", "breaches_by_provider_category")
         gaps = make_mapping_gaps(show_actions)
         if not gaps.empty:
             with st.expander("Mapping gaps / unmatched service IDs", expanded=False):
@@ -2910,31 +2951,23 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
                 st.session_state["provider_detail"] = provider
                 st.rerun()
         except TypeError:
-            st.dataframe(rolling_summary, use_container_width=True, hide_index=True, key="rolling_summary_fallback_v35")
-        st.markdown("### Action type summary")
-        st.dataframe(action_type_summary, use_container_width=True, hide_index=True, key="rolling_action_type_summary_v35")
+            exportable_table("Selected provider ranking", rolling_summary, "rolling_summary_fallback_v40", "selected_provider_ranking")
+        exportable_table("Action type summary", action_type_summary, "rolling_action_type_summary_v40", "action_type_summary")
 
     with tabs[2]:
         st.caption("All uploaded history combined. This ignores quarter selection and shows the true all-time position.")
         all_time_summary = make_provider_summary(hist_actions, hist_breaches)
-        st.markdown("### All-time provider ranking")
-        st.dataframe(all_time_summary, use_container_width=True, hide_index=True, key="all_time_provider_ranking_v35")
-        st.markdown("### All-time action categories")
-        st.dataframe(make_action_category_summary(hist_actions), use_container_width=True, hide_index=True, key="all_time_action_categories_v35")
-        st.markdown("### All-time breach categories")
-        st.dataframe(make_breach_category_summary(hist_breaches), use_container_width=True, hide_index=True, key="all_time_breach_categories_v35")
+        exportable_table("All-time provider ranking", all_time_summary, "all_time_provider_ranking_v40", "all_time_provider_ranking")
+        exportable_table("All-time action categories", make_action_category_summary(hist_actions), "all_time_action_categories_v40", "all_time_action_categories")
+        exportable_table("All-time breach categories", make_breach_category_summary(hist_breaches), "all_time_breach_categories_v40", "all_time_breach_categories")
 
     with tabs[3]:
         st.caption("Pivot view: providers/issues down the page and quarters running left-to-right in proper financial-year order.")
         pivot_metric = st.selectbox("Pivot metric", ["Actions", "Total breaches", "Significant matters", "Other breaches"], key="pivot_metric_select_v35")
-        st.markdown("### Provider by quarter pivot")
-        st.dataframe(make_provider_pivot(hist_actions, hist_breaches, pivot_metric, all_quarters), use_container_width=True, hide_index=True, key="provider_quarter_pivot_v35")
-        st.markdown("### Action type by quarter pivot")
-        st.dataframe(make_action_type_pivot(hist_actions, all_quarters), use_container_width=True, hide_index=True, key="action_type_quarter_pivot_v35")
-        st.markdown("### Law/Reg by quarter pivot")
-        st.dataframe(make_issue_pivot(hist_breaches, "breach_code", all_quarters), use_container_width=True, hide_index=True, key="law_reg_quarter_pivot_v35")
-        st.markdown("### Category by quarter pivot")
-        st.dataframe(make_issue_pivot(hist_breaches, "classification", all_quarters), use_container_width=True, hide_index=True, key="breach_category_quarter_pivot_v35")
+        exportable_table("Provider by quarter pivot", make_provider_pivot(hist_actions, hist_breaches, pivot_metric, all_quarters), "provider_quarter_pivot_v40", "provider_by_quarter_pivot")
+        exportable_table("Action type by quarter pivot", make_action_type_pivot(hist_actions, all_quarters), "action_type_quarter_pivot_v40", "action_type_by_quarter_pivot")
+        exportable_table("Law/Reg by quarter pivot", make_issue_pivot(hist_breaches, "breach_code", all_quarters), "law_reg_quarter_pivot_v40", "law_reg_by_quarter_pivot")
+        exportable_table("Category by quarter pivot", make_issue_pivot(hist_breaches, "classification", all_quarters), "breach_category_quarter_pivot_v40", "category_by_quarter_pivot")
 
     with tabs[4]:
         provider_list = rolling_summary["provider"].astype(str).tolist() if not rolling_summary.empty else []
@@ -2951,23 +2984,19 @@ def render_reports_page(hist_actions: pd.DataFrame, hist_breaches: pd.DataFrame,
             render_pie(make_breach_category_summary(pb), "Breach references by category", key=f"provider_breaches_v35_{selected_provider}")
 
     with tabs[5]:
-        st.dataframe(law_summary, use_container_width=True, hide_index=True, key="law_summary_v35")
+        exportable_table("Law/Reg breakdown", law_summary, "law_summary_v40", "law_reg_breakdown")
         if not show_breaches.empty:
-            st.markdown("### Serious matters only: Law 165/166/167")
             sig_only = show_breaches[show_breaches["classification"].eq("Significant matter: Law 165/166/167")]
-            st.dataframe(make_law_summary(sig_only), use_container_width=True, hide_index=True, key="serious_law_summary_v35")
+            exportable_table("Serious matters only: Law 165/166/167", make_law_summary(sig_only), "serious_law_summary_v40", "serious_law_summary")
 
     with tabs[6]:
         glossary_df = make_law_glossary(show_actions, show_breaches)
         st.caption("Plain-English guide to every Law/Reg reference found in the selected data. Export includes the same sheet.")
-        st.dataframe(glossary_df, use_container_width=True, hide_index=True, key="law_glossary_v36")
-        st.download_button("Download law glossary CSV", glossary_df.to_csv(index=False), "law_glossary.csv", "text/csv", key="download_law_glossary_csv_v36")
+        exportable_table("Law glossary", glossary_df, "law_glossary_v40", "law_glossary")
 
     with tabs[7]:
-        st.markdown("### Extracted enforcement actions")
-        st.dataframe(show_actions.drop(columns=["raw_text"], errors="ignore"), use_container_width=True, hide_index=True, key="raw_actions_v36")
-        st.markdown("### Extracted breach references")
-        st.dataframe(show_breaches, use_container_width=True, hide_index=True, key="raw_breaches_v36")
+        exportable_table("Extracted enforcement actions", show_actions.drop(columns=["raw_text"], errors="ignore"), "raw_actions_v40", "extracted_enforcement_actions")
+        exportable_table("Extracted breach references", show_breaches, "raw_breaches_v40", "extracted_breach_references")
 
     with tabs[8]:
         all_time_summary = make_provider_summary(hist_actions, hist_breaches)
