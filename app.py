@@ -880,34 +880,99 @@ def init_db(create_defaults: bool = False):
         ensure_default_users()
 
 
+def _sqlite_type_for_series(series: pd.Series) -> str:
+    """Return a safe SQLite column type for a pandas Series."""
+    try:
+        if pd.api.types.is_integer_dtype(series):
+            return "INTEGER"
+        if pd.api.types.is_float_dtype(series):
+            return "REAL"
+    except Exception:
+        pass
+    return "TEXT"
+
+
+def _safe_sql_append(con: sqlite3.Connection, table_name: str, df: pd.DataFrame):
+    """Append a DataFrame to SQLite without crashing when new columns appear.
+
+    The app schema has changed a lot during builds. Existing Streamlit Cloud
+    databases may have older versions of the tables. Pandas `to_sql(...,
+    if_exists='append')` crashes if the DataFrame has columns the table does not
+    yet have. This function adds missing columns first, then writes.
+    """
+    if df is None or df.empty:
+        return
+
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    existing_cols = [r[1] for r in con.execute(f"PRAGMA table_info({table_name})").fetchall()]
+    if not existing_cols:
+        df.to_sql(table_name, con, if_exists="append", index=False)
+        return
+
+    for col in df.columns:
+        if col not in existing_cols:
+            col_type = _sqlite_type_for_series(df[col])
+            safe_col = str(col).replace('"', '""')
+            con.execute(f'ALTER TABLE {table_name} ADD COLUMN "{safe_col}" {col_type}')
+            existing_cols.append(col)
+
+    # Ensure old columns that are missing from this upload still exist in df.
+    # This keeps inserts stable even when pandas/schema column order varies.
+    for col in existing_cols:
+        if col not in df.columns:
+            df[col] = None
+
+    df = df[existing_cols]
+    df.to_sql(table_name, con, if_exists="append", index=False)
+
+
 def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame, report_meta: pd.DataFrame = None, uploaded_by: str = ""):
+    init_db(create_defaults=False)
     con = sqlite3.connect(DB_PATH)
     processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if not actions.empty:
-        actions = actions.copy()
-        if "processed_at" not in actions.columns:
-            actions["processed_at"] = processed_at
-        if "uploaded_by" not in actions.columns:
-            actions["uploaded_by"] = uploaded_by or current_user_email()
-        actions.to_sql("actions", con, if_exists="append", index=False)
-    if not breaches.empty:
-        breaches = breaches.copy()
-        if "processed_at" not in breaches.columns:
-            breaches["processed_at"] = processed_at
-        breaches.to_sql("breaches", con, if_exists="append", index=False)
-    if not actions.empty:
-        run_id = str(actions["run_id"].iloc[0])
-        quarters = sorted([str(q) for q in actions["quarter"].dropna().unique().tolist()])
-        quarter = quarters[0] if len(quarters) == 1 else f"Bulk upload — {len(quarters)} quarters"
-        con.execute("INSERT OR REPLACE INTO runs(run_id, quarter, processed_at, actions_count, breaches_count, notes, uploaded_by) VALUES (?,?,?,?,?,?,?)", (run_id, quarter, processed_at, len(actions), len(breaches), "", uploaded_by or current_user_email()))
-    if report_meta is not None and not report_meta.empty:
-        report_meta = report_meta.copy()
-        if "processed_at" not in report_meta.columns:
-            report_meta["processed_at"] = processed_at
-        if "uploaded_by" not in report_meta.columns:
-            report_meta["uploaded_by"] = uploaded_by or current_user_email()
-        report_meta.to_sql("reports", con, if_exists="append", index=False)
-    con.commit(); con.close()
+    user_email = uploaded_by or current_user_email()
+    try:
+        if actions is not None and not actions.empty:
+            actions = actions.copy()
+            if "processed_at" not in actions.columns:
+                actions["processed_at"] = processed_at
+            if "uploaded_by" not in actions.columns:
+                actions["uploaded_by"] = user_email
+            _safe_sql_append(con, "actions", actions)
+
+        if breaches is not None and not breaches.empty:
+            breaches = breaches.copy()
+            if "processed_at" not in breaches.columns:
+                breaches["processed_at"] = processed_at
+            if "uploaded_by" not in breaches.columns:
+                breaches["uploaded_by"] = user_email
+            _safe_sql_append(con, "breaches", breaches)
+
+        if actions is not None and not actions.empty:
+            run_id = str(actions["run_id"].iloc[0]) if "run_id" in actions.columns else datetime.now().strftime("%Y%m%d%H%M%S")
+            quarters = sorted([str(q) for q in actions.get("quarter", pd.Series(dtype=str)).dropna().unique().tolist()])
+            quarter = quarters[0] if len(quarters) == 1 else f"Bulk upload — {len(quarters)} quarters"
+            con.execute(
+                "INSERT OR REPLACE INTO runs(run_id, quarter, processed_at, actions_count, breaches_count, notes, uploaded_by) VALUES (?,?,?,?,?,?,?)",
+                (run_id, quarter, processed_at, int(len(actions)), int(len(breaches) if breaches is not None else 0), "", user_email),
+            )
+
+        if report_meta is not None and not report_meta.empty:
+            report_meta = report_meta.copy()
+            if "processed_at" not in report_meta.columns:
+                report_meta["processed_at"] = processed_at
+            if "uploaded_by" not in report_meta.columns:
+                report_meta["uploaded_by"] = user_email
+            _safe_sql_append(con, "reports", report_meta)
+
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
 def load_history() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
