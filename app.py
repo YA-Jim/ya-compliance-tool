@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v3.9 — Restored + table extraction fix"
+APP_VERSION = "v4.0 — hard reset and orphan-data guard"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -912,7 +912,28 @@ def load_history() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     actions = pd.read_sql_query("SELECT * FROM actions", con)
     breaches = pd.read_sql_query("SELECT * FROM breaches", con)
     runs = pd.read_sql_query("SELECT * FROM runs ORDER BY processed_at DESC", con)
+    try:
+        reports = pd.read_sql_query("SELECT run_id FROM reports", con)
+    except Exception:
+        reports = pd.DataFrame()
     con.close()
+
+    # Safety guard: if report/run history has been cleared, do not allow orphaned
+    # extracted rows to keep populating the dashboard. This fixes old-version/reset
+    # remnants where actions survived without any saved file history.
+    if actions is not None and not actions.empty:
+        valid_run_ids = set()
+        if runs is not None and not runs.empty and "run_id" in runs.columns:
+            valid_run_ids |= set(runs["run_id"].dropna().astype(str))
+        if reports is not None and not reports.empty and "run_id" in reports.columns:
+            valid_run_ids |= set(reports["run_id"].dropna().astype(str))
+        if not valid_run_ids:
+            actions = actions.iloc[0:0].copy()
+            breaches = breaches.iloc[0:0].copy() if breaches is not None else breaches
+        elif "run_id" in actions.columns:
+            actions = actions[actions["run_id"].astype(str).isin(valid_run_ids)].copy()
+            if breaches is not None and not breaches.empty and "run_id" in breaches.columns:
+                breaches = breaches[breaches["run_id"].astype(str).isin(valid_run_ids)].copy()
     return actions, breaches, runs
 
 
@@ -1311,24 +1332,37 @@ def master_reset_uploaded_data(admin_password: str, phrase: str) -> Tuple[bool, 
         return False, "Admin password incorrect. Nothing reset."
     if str(phrase).strip() != "MASTER RESET":
         return False, "Type MASTER RESET exactly to confirm."
+
     init_db()
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     counts = {}
-    for table in ["actions", "breaches", "runs", "reports", "service_master", "audit_logs"]:
+
+    # Hard reset the data tables instead of only deleting rows. This removes old
+    # orphaned data and old-schema remnants that can survive earlier versions.
+    data_tables = ["actions", "breaches", "runs", "reports", "service_master", "audit_logs"]
+    for table in data_tables:
         try:
             counts[table] = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            cur.execute(f"DELETE FROM {table}")
         except Exception:
             counts[table] = "not found"
+        try:
+            cur.execute(f"DROP TABLE IF EXISTS {table}")
+        except Exception:
+            pass
     con.commit(); con.close()
+
+    # Recreate empty tables without touching users.
+    init_db(create_defaults=False)
+
     # Clear all app state that can make old data look like it still exists.
     preserve = {"logged_in", "current_user", "auth_ok"}
     for k in list(st.session_state.keys()):
         if k not in preserve:
             del st.session_state[k]
-    log_audit("master_reset", f"Master reset performed. Cleared: {counts}")
-    return True, "Master reset complete. Uploaded data, service/provider source file, report history, and audit logs have been cleared. Users remain active."
+
+    # Do not write a new audit row after reset, because audit_logs was intentionally cleared.
+    return True, f"Master reset complete. Cleared uploaded data tables: {counts}. Users remain active."
 
 
 def build_upload_review(uploaded_files: List, provider_rules) -> Tuple[pd.DataFrame, Dict[str, str]]:
