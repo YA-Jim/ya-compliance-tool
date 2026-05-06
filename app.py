@@ -906,33 +906,65 @@ def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame, report_meta: pd.Da
 
 
 def load_history() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Load saved history safely.
+
+    The reports table is the source of truth for what has actually been saved.
+    If reports is empty, the dashboard must be empty too. Earlier builds could
+    leave orphaned rows in actions/breaches/runs after a reset; this function
+    now clears those orphans from the database instead of merely hiding them.
+    """
     init_db()
     con = sqlite3.connect(DB_PATH)
+
+    # Read reports first. This is the saved-file ledger and therefore the
+    # strongest indicator of whether uploaded report data should exist.
+    try:
+        reports = pd.read_sql_query("SELECT * FROM reports ORDER BY processed_at DESC", con)
+    except Exception:
+        reports = pd.DataFrame()
+
+    # If there are no saved report files, wipe any orphaned extracted rows and
+    # return empty frames. This fixes cases where the history/delete panel says
+    # no files exist but the dashboard still shows stale extracted data.
+    if reports is None or reports.empty:
+        try:
+            con.execute("DELETE FROM actions")
+            con.execute("DELETE FROM breaches")
+            con.execute("DELETE FROM runs")
+            con.commit()
+        except Exception:
+            pass
+        con.close()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
     actions = pd.read_sql_query("SELECT * FROM actions", con)
     breaches = pd.read_sql_query("SELECT * FROM breaches", con)
     runs = pd.read_sql_query("SELECT * FROM runs ORDER BY processed_at DESC", con)
-    try:
-        reports = pd.read_sql_query("SELECT run_id FROM reports", con)
-    except Exception:
-        reports = pd.DataFrame()
-    con.close()
 
-    # Safety guard: if report/run history has been cleared, do not allow orphaned
-    # extracted rows to keep populating the dashboard. This fixes old-version/reset
-    # remnants where actions survived without any saved file history.
-    if actions is not None and not actions.empty:
-        valid_run_ids = set()
-        if runs is not None and not runs.empty and "run_id" in runs.columns:
-            valid_run_ids |= set(runs["run_id"].dropna().astype(str))
-        if reports is not None and not reports.empty and "run_id" in reports.columns:
-            valid_run_ids |= set(reports["run_id"].dropna().astype(str))
-        if not valid_run_ids:
-            actions = actions.iloc[0:0].copy()
-            breaches = breaches.iloc[0:0].copy() if breaches is not None else breaches
-        elif "run_id" in actions.columns:
-            actions = actions[actions["run_id"].astype(str).isin(valid_run_ids)].copy()
-            if breaches is not None and not breaches.empty and "run_id" in breaches.columns:
-                breaches = breaches[breaches["run_id"].astype(str).isin(valid_run_ids)].copy()
+    valid_run_ids = set()
+    if "run_id" in reports.columns:
+        valid_run_ids |= set(reports["run_id"].dropna().astype(str))
+    if runs is not None and not runs.empty and "run_id" in runs.columns:
+        # Keep only runs that also have at least one saved report file.
+        runs = runs[runs["run_id"].astype(str).isin(valid_run_ids)].copy()
+
+    if actions is not None and not actions.empty and "run_id" in actions.columns:
+        actions = actions[actions["run_id"].astype(str).isin(valid_run_ids)].copy()
+    if breaches is not None and not breaches.empty and "run_id" in breaches.columns:
+        breaches = breaches[breaches["run_id"].astype(str).isin(valid_run_ids)].copy()
+
+    # Persist the cleanup so stale rows do not keep reappearing after reruns.
+    try:
+        if valid_run_ids:
+            placeholders = ",".join(["?"] * len(valid_run_ids))
+            con.execute(f"DELETE FROM actions WHERE run_id NOT IN ({placeholders})", tuple(valid_run_ids))
+            con.execute(f"DELETE FROM breaches WHERE run_id NOT IN ({placeholders})", tuple(valid_run_ids))
+            con.execute(f"DELETE FROM runs WHERE run_id NOT IN ({placeholders})", tuple(valid_run_ids))
+            con.commit()
+    except Exception:
+        pass
+
+    con.close()
     return actions, breaches, runs
 
 
