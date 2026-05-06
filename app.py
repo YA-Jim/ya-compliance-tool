@@ -19,7 +19,7 @@ except Exception:
     pdfplumber = None
 
 APP_TITLE = "Young Academics Compliance Benchmarking Tool"
-APP_VERSION = "v4.0 — hard reset and orphan-data guard"
+APP_VERSION = "v3.9 — Restored + table extraction fix"
 DB_PATH = "compliance_history.sqlite3"
 LOGO_URL = "https://www.youngacademics.com.au/application/themes/youngacademics/assets/images/logo.svg"
 SIGNIFICANT_LAWS = {"165", "166", "167"}
@@ -28,63 +28,64 @@ SIGNIFICANT_LAWS = {"165", "166", "167"}
 
 def show_soft_loading(message="Please wait. Updating..."):
     """Show a blocking YA-styled loading overlay before a Streamlit rerun/action."""
-    safe_message = str(message).replace("<", "&lt;").replace(">", "&gt;")
-    st.markdown(
-        """
-        <div class="ya-loading-overlay">
-          <div class="ya-loading-box">
-            <div class="ya-loading-spinner"></div>
-            <div class="ya-loading-title">__MESSAGE__</div>
-            <div class="ya-loading-subtitle">Please do not click away while the app updates.</div>
-          </div>
-        </div>
-        <style>
-          .ya-loading-overlay {
-            position: fixed;
-            inset: 0;
-            z-index: 999999;
-            background: rgba(47, 126, 132, 0.72);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .ya-loading-box {
-            width: min(440px, calc(100vw - 48px));
-            border-radius: 28px;
-            padding: 32px 34px;
-            background: rgba(255,255,255,0.88);
-            border: 1px solid rgba(255,255,255,0.70);
-            box-shadow: 0 28px 80px rgba(0,0,0,0.24);
-            text-align: center;
-            color: #004f57;
-          }
-          .ya-loading-spinner {
-            width: 48px;
-            height: 48px;
-            margin: 0 auto 18px;
-            border-radius: 50%;
-            border: 5px solid rgba(0,79,87,0.18);
-            border-top-color: #60d6cf;
-            animation: ya-spin 0.85s linear infinite;
-          }
-          .ya-loading-title {
-            font-size: 22px;
-            font-weight: 900;
-            letter-spacing: -0.02em;
-            margin-bottom: 8px;
-          }
-          .ya-loading-subtitle {
-            font-size: 13px;
-            color: rgba(0,79,87,0.72);
-            font-weight: 700;
-          }
-          @keyframes ya-spin { to { transform: rotate(360deg); } }
-        </style>
-        """.replace("__MESSAGE__", safe_message),
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"""
+    <div class="ya-loading-overlay">
+      <div class="ya-loading-box">
+        <div class="ya-loading-spinner"></div>
+        <div class="ya-loading-title">{message}</div>
+        <div class="ya-loading-subtitle">Please do not click away while the app updates.</div>
+      </div>
+    </div>
+    <style>
+      .ya-loading-overlay {{
+        position: fixed;
+        inset: 0;
+        z-index: 999999;
+        background: rgba(47, 126, 132, 0.72);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }}
+      .ya-loading-box {{
+        width: min(440px, calc(100vw - 48px));
+        border-radius: 28px;
+        padding: 32px 34px;
+        background: rgba(255,255,255,0.88);
+        border: 1px solid rgba(255,255,255,0.70);
+        box-shadow: 0 28px 80px rgba(0,0,0,0.24);
+        text-align: center;
+        color: #004f57;
+      }}
+      .ya-loading-spinner {{
+        width: 48px;
+        height: 48px;
+        margin: 0 auto 18px;
+        border-radius: 50%;
+        border: 5px solid rgba(0,79,87,0.18);
+        border-top-color: #60d6cf;
+        animation: ya-spin 0.85s linear infinite;
+      }}
+      .ya-loading-title {{
+        font-size: 22px;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        margin-bottom: 8px;
+      }}
+      .ya-loading-subtitle {{
+        font-size: 13px;
+        color: rgba(0,79,87,0.72);
+        font-weight: 700;
+      }}
+      @keyframes ya-spin {{ to {{ transform: rotate(360deg); }} }}
+    
+.ya-success-panel{background:rgba(255,255,255,.92);border:1px solid rgba(255,255,255,.72);box-shadow:0 22px 60px rgba(0,0,0,.18);border-radius:26px;padding:24px 28px;margin:18px 0 24px;color:#004f57}
+.ya-success-title{font-size:24px;font-weight:950;margin-bottom:16px}
+.ya-success-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.ya-success-grid div{background:#eaf6f8;border-radius:18px;padding:16px;font-weight:800;color:#004f57}
+.ya-duplicate-panel{background:rgba(255,248,216,.96);border:2px solid #f1c232;box-shadow:0 18px 48px rgba(0,0,0,.14);border-radius:24px;padding:20px 24px;margin:18px 0;color:#3d3300}.ya-duplicate-panel h3{margin:0 0 8px;font-size:22px}.ya-duplicate-list{margin:10px 0 0 0;padding-left:18px;font-weight:800}
+</style>
+    """, unsafe_allow_html=True)
     time.sleep(0.35)
 
 DEFAULT_PROVIDER_RULES = [
@@ -906,64 +907,11 @@ def save_to_db(actions: pd.DataFrame, breaches: pd.DataFrame, report_meta: pd.Da
 
 
 def load_history() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load saved history safely.
-
-    The reports table is the source of truth for what has actually been saved.
-    If reports is empty, the dashboard must be empty too. Earlier builds could
-    leave orphaned rows in actions/breaches/runs after a reset; this function
-    now clears those orphans from the database instead of merely hiding them.
-    """
     init_db()
     con = sqlite3.connect(DB_PATH)
-
-    # Read reports first. This is the saved-file ledger and therefore the
-    # strongest indicator of whether uploaded report data should exist.
-    try:
-        reports = pd.read_sql_query("SELECT * FROM reports ORDER BY processed_at DESC", con)
-    except Exception:
-        reports = pd.DataFrame()
-
-    # If there are no saved report files, wipe any orphaned extracted rows and
-    # return empty frames. This fixes cases where the history/delete panel says
-    # no files exist but the dashboard still shows stale extracted data.
-    if reports is None or reports.empty:
-        try:
-            con.execute("DELETE FROM actions")
-            con.execute("DELETE FROM breaches")
-            con.execute("DELETE FROM runs")
-            con.commit()
-        except Exception:
-            pass
-        con.close()
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
     actions = pd.read_sql_query("SELECT * FROM actions", con)
     breaches = pd.read_sql_query("SELECT * FROM breaches", con)
     runs = pd.read_sql_query("SELECT * FROM runs ORDER BY processed_at DESC", con)
-
-    valid_run_ids = set()
-    if "run_id" in reports.columns:
-        valid_run_ids |= set(reports["run_id"].dropna().astype(str))
-    if runs is not None and not runs.empty and "run_id" in runs.columns:
-        # Keep only runs that also have at least one saved report file.
-        runs = runs[runs["run_id"].astype(str).isin(valid_run_ids)].copy()
-
-    if actions is not None and not actions.empty and "run_id" in actions.columns:
-        actions = actions[actions["run_id"].astype(str).isin(valid_run_ids)].copy()
-    if breaches is not None and not breaches.empty and "run_id" in breaches.columns:
-        breaches = breaches[breaches["run_id"].astype(str).isin(valid_run_ids)].copy()
-
-    # Persist the cleanup so stale rows do not keep reappearing after reruns.
-    try:
-        if valid_run_ids:
-            placeholders = ",".join(["?"] * len(valid_run_ids))
-            con.execute(f"DELETE FROM actions WHERE run_id NOT IN ({placeholders})", tuple(valid_run_ids))
-            con.execute(f"DELETE FROM breaches WHERE run_id NOT IN ({placeholders})", tuple(valid_run_ids))
-            con.execute(f"DELETE FROM runs WHERE run_id NOT IN ({placeholders})", tuple(valid_run_ids))
-            con.commit()
-    except Exception:
-        pass
-
     con.close()
     return actions, breaches, runs
 
@@ -1321,79 +1269,6 @@ def delete_report_data(quarter: str, report_type: str):
     cur.execute("DELETE FROM actions WHERE quarter=? AND report_type=?", (quarter, report_type))
     cur.execute("DELETE FROM reports WHERE quarter=? AND report_type=?", (quarter, report_type))
     con.commit(); con.close()
-
-
-def delete_report_files(report_rows: pd.DataFrame):
-    """Admin-only bulk delete by individual report rows. Keeps users intact."""
-    if report_rows is None or report_rows.empty:
-        return 0
-    init_db()
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    deleted = 0
-    for _, row in report_rows.iterrows():
-        quarter = str(row.get("quarter", ""))
-        report_type = str(row.get("report_type", ""))
-        file_name = str(row.get("file_name", ""))
-        run_id = str(row.get("run_id", ""))
-        action_ids = [r[0] for r in cur.execute(
-            "SELECT action_id FROM actions WHERE quarter=? AND report_type=? AND run_id=?",
-            (quarter, report_type, run_id)
-        ).fetchall()]
-        if action_ids:
-            placeholders = ",".join(["?"] * len(action_ids))
-            cur.execute(f"DELETE FROM breaches WHERE action_id IN ({placeholders})", action_ids)
-        cur.execute("DELETE FROM actions WHERE quarter=? AND report_type=? AND run_id=?", (quarter, report_type, run_id))
-        cur.execute("DELETE FROM reports WHERE quarter=? AND report_type=? AND run_id=? AND file_name=?", (quarter, report_type, run_id, file_name))
-        # Remove empty run records after the report-level delete.
-        remaining = cur.execute("SELECT COUNT(*) FROM actions WHERE run_id=?", (run_id,)).fetchone()[0]
-        if remaining == 0:
-            cur.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
-        deleted += 1
-    con.commit(); con.close()
-    log_audit("delete_report_files", f"Deleted {deleted} saved report file(s)")
-    return deleted
-
-
-def master_reset_uploaded_data(admin_password: str, phrase: str) -> Tuple[bool, str]:
-    """Admin-only full reset of uploaded report/source data. Users remain intact."""
-    if not is_admin():
-        return False, "Only admins can perform a master reset."
-    if not verify_current_admin_password(admin_password):
-        return False, "Admin password incorrect. Nothing reset."
-    if str(phrase).strip() != "MASTER RESET":
-        return False, "Type MASTER RESET exactly to confirm."
-
-    init_db()
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    counts = {}
-
-    # Hard reset the data tables instead of only deleting rows. This removes old
-    # orphaned data and old-schema remnants that can survive earlier versions.
-    data_tables = ["actions", "breaches", "runs", "reports", "service_master", "audit_logs"]
-    for table in data_tables:
-        try:
-            counts[table] = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        except Exception:
-            counts[table] = "not found"
-        try:
-            cur.execute(f"DROP TABLE IF EXISTS {table}")
-        except Exception:
-            pass
-    con.commit(); con.close()
-
-    # Recreate empty tables without touching users.
-    init_db(create_defaults=False)
-
-    # Clear all app state that can make old data look like it still exists.
-    preserve = {"logged_in", "current_user", "auth_ok"}
-    for k in list(st.session_state.keys()):
-        if k not in preserve:
-            del st.session_state[k]
-
-    # Do not write a new audit row after reset, because audit_logs was intentionally cleared.
-    return True, f"Master reset complete. Cleared uploaded data tables: {counts}. Users remain active."
 
 
 def build_upload_review(uploaded_files: List, provider_rules) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -2580,49 +2455,26 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
     with action_col:
         process_clicked = st.button("Process uploaded PDFs", key="process_bulk_pdfs_v35", type="primary")
     with history_col:
-        with st.expander("History manager / delete saved files", expanded=False):
+        with st.expander("History manager / delete saved data", expanded=False):
             reports_history = load_reports_history()
-            st.caption("Delete saved report files individually or in bulk. Admin password required.")
-            if reports_history.empty:
-                st.caption("No saved report files yet.")
-            else:
-                display_cols = [c for c in ["run_id", "quarter", "report_type", "file_name", "uploaded_by", "actions_count", "breaches_count", "processed_at"] if c in reports_history.columns]
-                delete_df = reports_history[display_cols].copy()
-                delete_df.insert(0, "Delete", False)
-                edited_delete_df = st.data_editor(
-                    delete_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    key="saved_report_file_delete_editor_v50",
-                    column_config={"Delete": st.column_config.CheckboxColumn("Delete", help="Tick files to delete")},
-                    disabled=[c for c in delete_df.columns if c != "Delete"],
-                )
-                selected = edited_delete_df[edited_delete_df["Delete"] == True].drop(columns=["Delete"], errors="ignore")
-                st.caption(f"Selected files: {len(selected)}")
-                bulk_delete_pw = st.text_input("Admin password to delete selected files", type="password", key="bulk_delete_files_pw_v50")
-                bulk_delete_phrase = st.text_input("Type DELETE to confirm selected file deletion", key="bulk_delete_files_phrase_v50")
-                if st.button("Delete selected saved files", key="bulk_delete_files_btn_v50", disabled=(selected.empty or bulk_delete_phrase != "DELETE")):
-                    if not verify_current_admin_password(bulk_delete_pw):
-                        st.error("Admin password incorrect. Nothing deleted.")
-                    else:
-                        show_soft_loading("Please wait. Deleting selected report files...")
-                        count = delete_report_files(selected)
-                        st.success(f"Deleted {count} saved report file(s). Refreshing…")
+            st.caption(f"Saved runs: {len(runs)}")
+            if not reports_history.empty:
+                st.markdown("**Saved reports by quarter/type**")
+                st.dataframe(reports_history[["quarter", "report_type", "file_name", "actions_count", "breaches_count", "processed_at"]], use_container_width=True, hide_index=True, key="saved_reports_history_v35")
+            if not runs.empty:
+                run_labels = [f"{r['quarter']} — {r['processed_at']} — {r['actions_count']} actions" for _, r in runs.iterrows()]
+                selected_delete = st.selectbox("Delete a saved run", [""] + run_labels, key="delete_saved_run_select_v35")
+                if selected_delete:
+                    idx = run_labels.index(selected_delete)
+                    run_id_to_delete = runs.iloc[idx]["run_id"]
+                    confirm_delete = st.text_input("Type DELETE to confirm", key="confirm_run_delete_v35")
+                    if st.button("Delete selected run", key="delete_selected_run_btn_v35", disabled=(confirm_delete != "DELETE")):
+                        show_soft_loading("Please wait. Deleting saved run...")
+                        delete_run(run_id_to_delete)
+                        st.success("Deleted. Refreshing…")
                         st.rerun()
-
-            st.markdown("---")
-            st.markdown("### Master reset")
-            st.warning("This clears all uploaded reports, extracted data, saved history, uploaded service/provider source data, and audit logs. User accounts remain.")
-            reset_pw = st.text_input("Admin password for master reset", type="password", key="master_reset_pw_v50")
-            reset_phrase = st.text_input("Type MASTER RESET to confirm", key="master_reset_phrase_v50")
-            if st.button("Master reset all uploaded data", key="master_reset_btn_v50", disabled=(reset_phrase != "MASTER RESET")):
-                show_soft_loading("Please wait. Performing master reset...")
-                ok, msg = master_reset_uploaded_data(reset_pw, reset_phrase)
-                if ok:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
+            else:
+                st.caption("No saved runs yet.")
 
     if process_clicked:
         if not bulk_files:
@@ -2638,14 +2490,17 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
             elif (review_df["Existing rows"].fillna(0).astype(int) > 0).any() and not st.session_state.get("replace_duplicates_confirmed"):
                 st.error("Existing data found. Confirm 'Replace existing data' first or cancel the upload.")
             else:
-                show_soft_loading("Please wait. Processing uploaded files...")
+                st.info("Please wait. Processing uploaded files… This can take a minute for large PDFs. Do not click away.")
+                progress = st.progress(0, text="Preparing upload…")
                 run_id = datetime.now().strftime("%Y%m%d%H%M%S")
                 all_actions, all_breaches, report_meta = [], [], []
                 processed_files = 0
                 skipped_files = []
                 with st.spinner("Processing bulk upload…"):
                     files_to_process = {str(x) for x in review_df["File"].tolist()}
-                    for f in bulk_files:
+                    total_files_for_progress = max(1, len(bulk_files))
+                    for idx, f in enumerate(bulk_files, start=1):
+                        progress.progress(min(95, int((idx - 1) / total_files_for_progress * 95)), text=f"Processing {idx} of {total_files_for_progress}: {f.name}")
                         if f.name not in files_to_process:
                             skipped_files.append(f"{f.name} — removed from upload review")
                             continue
@@ -2676,6 +2531,7 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         })
                         processed_files += 1
+                progress.progress(96, text="Preparing extracted data…")
                 actions = pd.concat(all_actions, ignore_index=True) if all_actions else pd.DataFrame()
                 breaches = pd.concat(all_breaches, ignore_index=True) if all_breaches else pd.DataFrame()
                 actions, breaches = enrich_with_service_master(actions, breaches)
@@ -2683,12 +2539,14 @@ def render_upload_delete_page(hist_actions: pd.DataFrame, hist_breaches: pd.Data
                 if actions.empty:
                     st.warning("No new rows were saved. " + (" Skipped: " + "; ".join(skipped_files[:8]) if skipped_files else ""))
                 else:
+                    progress.progress(98, text="Saving to database…")
                     save_to_db(actions, breaches, meta_df)
                     quarters_saved = ", ".join(sorted(actions["quarter"].unique().tolist()))
                     st.session_state["last_upload_success"] = {"quarters": quarters_saved, "files": processed_files, "actions": len(actions), "breaches": len(breaches)}
                     st.session_state["replace_duplicates_confirmed"] = False
                     st.session_state["upload_removed_files"] = []
                     st.session_state["upload_widget_nonce"] = st.session_state.get("upload_widget_nonce", 0) + 1
+                    progress.progress(100, text="Upload complete.")
                     st.success(f"Processed {processed_files} file(s), saved {len(actions)} actions and {len(breaches)} breach references across: {quarters_saved}.")
                     if skipped_files:
                         st.info("Skipped: " + "; ".join(skipped_files[:10]))
